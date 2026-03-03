@@ -26,6 +26,7 @@ typedef struct {
     Chunk *chunk;           /* current chunk being written to */
     Local locals[MAX_LOCALS];
     int local_count;
+    int max_local_count;    /* high watermark for pre-allocation */
     int scope_depth;
     int func_index;         /* index in module */
 } CodegenCtx;
@@ -61,6 +62,9 @@ static int add_local(CodegenCtx *ctx, const char *name, int name_len, int line) 
     local->name_len = name_len;
     local->slot = slot;
     local->depth = ctx->scope_depth;
+    if (ctx->local_count > ctx->max_local_count) {
+        ctx->max_local_count = ctx->local_count;
+    }
     return slot;
 }
 
@@ -206,6 +210,38 @@ static void gen_expr(CodegenCtx *ctx, Expr *e) {
         break;
 
     case EXPR_CALL: {
+        /* Check for built-in functions */
+        if (e->callee->kind == EXPR_IDENT) {
+            const char *name = e->callee->ident;
+            int nlen = e->callee->ident_len;
+
+            /* print(expr) — built-in */
+            if (nlen == 5 && memcmp(name, "print", 5) == 0) {
+                if (e->arg_count >= 1) {
+                    gen_expr(ctx, e->args[0]);
+                    emit(ctx, OP_PRINT, e->line);
+                }
+                /* print returns void, push nil */
+                emit(ctx, OP_NIL, e->line);
+                break;
+            }
+
+            /* println(expr) — print with newline */
+            if (nlen == 7 && memcmp(name, "println", 7) == 0) {
+                if (e->arg_count >= 1) {
+                    gen_expr(ctx, e->args[0]);
+                    emit(ctx, OP_PRINT, e->line);
+                }
+                /* Print newline */
+                int idx = chunk_add_string(ctx->chunk, "\n", 1);
+                emit(ctx, OP_CONST_STRING, e->line);
+                emit_u16(ctx, (uint16_t)idx, e->line);
+                emit(ctx, OP_PRINT, e->line);
+                emit(ctx, OP_NIL, e->line);
+                break;
+            }
+        }
+
         /* Push callee first, then arguments */
         gen_expr(ctx, e->callee);
         for (int i = 0; i < e->arg_count; i++) {
@@ -260,6 +296,7 @@ static void gen_stmt(CodegenCtx *ctx, Stmt *s) {
         int slot = add_local(ctx, s->var_name, s->var_name_len, s->line);
         emit(ctx, OP_LOCAL_SET, s->line);
         emit_u16(ctx, (uint16_t)slot, s->line);
+        emit(ctx, OP_POP, s->line);
         break;
     }
 
@@ -333,7 +370,6 @@ static void gen_stmt(CodegenCtx *ctx, Stmt *s) {
                 emit_u16(ctx, (uint16_t)ni, s->line);
             }
         } else if (s->assign_target->kind == EXPR_MEMBER) {
-            /* obj.field = value → push obj, push value, field_set */
             gen_expr(ctx, s->assign_target->object);
             int fi = chunk_add_string(ctx->chunk,
                                       s->assign_target->member,
@@ -341,6 +377,7 @@ static void gen_stmt(CodegenCtx *ctx, Stmt *s) {
             emit(ctx, OP_FIELD_SET, s->line);
             emit_u16(ctx, (uint16_t)fi, s->line);
         }
+        emit(ctx, OP_POP, s->line);
         break;
     }
 
@@ -392,7 +429,7 @@ static void gen_function(Compiler *c, Decl *d) {
     emit(&ctx, OP_NIL, d->line);
     emit(&ctx, OP_RETURN, d->line);
 
-    c->module.functions[fi].local_count = ctx.local_count;
+    c->module.functions[fi].local_count = ctx.max_local_count;
 }
 
 /* ── Public API ────────────────────────────────────── */
