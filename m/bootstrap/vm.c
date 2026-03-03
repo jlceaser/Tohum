@@ -554,6 +554,92 @@ static VMResult run(VM *vm) {
             break;
         }
 
+        /* Array operations */
+        case OP_ARRAY_NEW: {
+            read_u16(frame); /* reserved for future use */
+            Val size_val = pop(vm);
+            int cap = (int)size_val.i;
+            if (cap < 8) cap = 8;
+            VMArray *arr = tohum_alloc(sizeof(VMArray));
+            arr->data = tohum_alloc(cap * sizeof(Val));
+            arr->len = 0;
+            arr->cap = cap;
+            /* Zero-fill */
+            for (int i = 0; i < cap; i++) {
+                arr->data[i].type = VAL_VOID;
+                arr->data[i].i = 0;
+            }
+            Val v = {0};
+            v.type = VAL_ARRAY;
+            v.array = arr;
+            push(vm, v);
+            break;
+        }
+
+        case OP_ARRAY_GET: {
+            Val idx = pop(vm);
+            Val arr_val = pop(vm);
+            if (arr_val.type != VAL_ARRAY) {
+                vm_set_error(vm, "array_get: not an array");
+                return VM_ERROR;
+            }
+            int i = (int)idx.i;
+            if (i < 0 || i >= arr_val.array->len) {
+                vm_set_error(vm, "array_get: index %d out of bounds (len=%d)",
+                         i, arr_val.array->len);
+                return VM_ERROR;
+            }
+            push(vm, arr_val.array->data[i]);
+            break;
+        }
+
+        case OP_ARRAY_SET: {
+            Val val = pop(vm);
+            Val idx = pop(vm);
+            Val arr_val = pop(vm);
+            if (arr_val.type != VAL_ARRAY) {
+                vm_set_error(vm, "array_set: not an array");
+                return VM_ERROR;
+            }
+            int i = (int)idx.i;
+            if (i < 0 || i >= arr_val.array->len) {
+                vm_set_error(vm, "array_set: index %d out of bounds (len=%d)",
+                         i, arr_val.array->len);
+                return VM_ERROR;
+            }
+            arr_val.array->data[i] = val;
+            break;
+        }
+
+        case OP_ARRAY_LEN: {
+            Val arr_val = pop(vm);
+            if (arr_val.type != VAL_ARRAY) {
+                push(vm, make_int(0));
+            } else {
+                push(vm, make_int(arr_val.array->len));
+            }
+            break;
+        }
+
+        case OP_ARRAY_PUSH: {
+            Val val = pop(vm);
+            Val arr_val = pop(vm);
+            if (arr_val.type != VAL_ARRAY) {
+                vm_set_error(vm, "array_push: not an array");
+                return VM_ERROR;
+            }
+            VMArray *arr = arr_val.array;
+            if (arr->len >= arr->cap) {
+                int new_cap = arr->cap * 2;
+                Val *new_data = tohum_alloc(new_cap * sizeof(Val));
+                memcpy(new_data, arr->data, arr->len * sizeof(Val));
+                arr->data = new_data;
+                arr->cap = new_cap;
+            }
+            arr->data[arr->len++] = val;
+            break;
+        }
+
         case OP_HALT:
             return VM_HALT;
 

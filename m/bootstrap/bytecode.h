@@ -83,6 +83,13 @@ typedef enum {
     OP_BUILTIN_READ_FILE, /* read_file(path) -> string */
     OP_BUILTIN_CHAR_TO_STR, /* char_to_str(int) -> string (single char) */
 
+    /* Array operations */
+    OP_ARRAY_NEW,       /* create array: [u16 count] — pops count elements, creates array */
+    OP_ARRAY_GET,       /* array_get(arr, idx) -> val */
+    OP_ARRAY_SET,       /* array_set(arr, idx, val) -> void */
+    OP_ARRAY_LEN,       /* array_len(arr) -> int */
+    OP_ARRAY_PUSH,      /* array_push(arr, val) -> void */
+
     /* System */
     OP_HALT,            /* stop execution */
 } OpCode;
@@ -96,10 +103,20 @@ typedef enum {
     VAL_STRING,
     VAL_PTR,
     VAL_STRUCT,
+    VAL_ARRAY,
     VAL_VOID,
 } ValType;
 
+/* Dynamic array for VM */
+typedef struct Val Val;
+
 typedef struct {
+    Val *data;
+    int len;
+    int cap;
+} VMArray;
+
+struct Val {
     ValType type;
     union {
         int64_t i;
@@ -107,9 +124,10 @@ typedef struct {
         int b;
         struct { const char *s; int s_len; };
         void *ptr;
+        VMArray *array;
         struct { int64_t *fields; int n_fields; int type_id; };
     };
-} Val;
+};
 
 /* --- Chunk: a sequence of bytecode --- */
 

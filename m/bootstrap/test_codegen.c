@@ -620,6 +620,97 @@ static void test_short_circuit_or(void) {
     check(v.type == VAL_INT && v.i == 42, "short_circuit_or: 42");
 }
 
+static void test_array_basic(void) {
+    int ok;
+    Val v = run_program(
+        "fn main() -> i32 {\n"
+        "    var arr: i32 = array_new(0);\n"
+        "    array_push(arr, 10);\n"
+        "    array_push(arr, 20);\n"
+        "    array_push(arr, 30);\n"
+        "    return array_len(arr);\n"
+        "}", &ok);
+    check(ok, "array_basic: runs");
+    check(v.type == VAL_INT && v.i == 3, "array_basic: len=3");
+}
+
+static void test_array_get(void) {
+    int ok;
+    Val v = run_program(
+        "fn main() -> i32 {\n"
+        "    var arr: i32 = array_new(0);\n"
+        "    array_push(arr, 42);\n"
+        "    array_push(arr, 99);\n"
+        "    return array_get(arr, 0);\n"
+        "}", &ok);
+    check(ok, "array_get: runs");
+    check(v.type == VAL_INT && v.i == 42, "array_get: arr[0]=42");
+}
+
+static void test_array_set(void) {
+    int ok;
+    Val v = run_program(
+        "fn main() -> i32 {\n"
+        "    var arr: i32 = array_new(0);\n"
+        "    array_push(arr, 1);\n"
+        "    array_push(arr, 2);\n"
+        "    array_set(arr, 0, 100);\n"
+        "    return array_get(arr, 0) + array_get(arr, 1);\n"
+        "}", &ok);
+    check(ok, "array_set: runs");
+    check(v.type == VAL_INT && v.i == 102, "array_set: 100+2=102");
+}
+
+static void test_array_loop(void) {
+    int ok;
+    Val v = run_program(
+        "fn main() -> i32 {\n"
+        "    var arr: i32 = array_new(0);\n"
+        "    var i: i32 = 0;\n"
+        "    while i < 10 {\n"
+        "        array_push(arr, i * i);\n"
+        "        i = i + 1;\n"
+        "    }\n"
+        "    var sum: i32 = 0;\n"
+        "    i = 0;\n"
+        "    while i < array_len(arr) {\n"
+        "        sum = sum + array_get(arr, i);\n"
+        "        i = i + 1;\n"
+        "    }\n"
+        "    return sum;\n"
+        "}", &ok);
+    check(ok, "array_loop: runs");
+    /* 0+1+4+9+16+25+36+49+64+81 = 285 */
+    check(v.type == VAL_INT && v.i == 285, "array_loop: sum of squares 0..9 = 285");
+}
+
+static void test_array_of_strings(void) {
+    Parser p;
+    parser_init(&p,
+        "fn main() -> i32 {\n"
+        "    var words: i32 = array_new(0);\n"
+        "    array_push(words, \"hello\");\n"
+        "    array_push(words, \" \");\n"
+        "    array_push(words, \"world\");\n"
+        "    var i: i32 = 0;\n"
+        "    while i < array_len(words) {\n"
+        "        print(array_get(words, i));\n"
+        "        i = i + 1;\n"
+        "    }\n"
+        "    return array_len(words);\n"
+        "}");
+    Program *prog = parser_parse(&p);
+    Compiler c;
+    compiler_init(&c);
+    compiler_compile(&c, prog);
+    VM vm;
+    vm_init(&vm, compiler_module(&c));
+    vm_run(&vm, "main");
+    check(memcmp(vm.output, "hello world", 11) == 0, "array_strings: \"hello world\"");
+    Val v = vm_result(&vm);
+    check(v.type == VAL_INT && v.i == 3, "array_strings: len=3");
+}
+
 /* ── Main ──────────────────────────────────────────── */
 
 int main(void) {
@@ -663,6 +754,11 @@ int main(void) {
     test_char_to_str();
     test_short_circuit_and();
     test_short_circuit_or();
+    test_array_basic();
+    test_array_get();
+    test_array_set();
+    test_array_loop();
+    test_array_of_strings();
 
     printf("\n%d/%d tests passed\n", tests_passed, tests_run);
     return tests_passed == tests_run ? 0 : 1;

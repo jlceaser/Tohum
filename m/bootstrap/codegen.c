@@ -310,6 +310,58 @@ static void gen_expr(CodegenCtx *ctx, Expr *e) {
                 break;
             }
 
+            /* array_new(count) — create array with initial count */
+            if (nlen == 9 && memcmp(name, "array_new", 9) == 0) {
+                if (e->arg_count >= 1) {
+                    gen_expr(ctx, e->args[0]);
+                }
+                emit(ctx, OP_ARRAY_NEW, e->line);
+                emit_u16(ctx, 0, e->line);
+                break;
+            }
+
+            /* array_get(arr, idx) — get element */
+            if (nlen == 9 && memcmp(name, "array_get", 9) == 0) {
+                if (e->arg_count >= 2) {
+                    gen_expr(ctx, e->args[0]);
+                    gen_expr(ctx, e->args[1]);
+                }
+                emit(ctx, OP_ARRAY_GET, e->line);
+                break;
+            }
+
+            /* array_set(arr, idx, val) — set element */
+            if (nlen == 9 && memcmp(name, "array_set", 9) == 0) {
+                if (e->arg_count >= 3) {
+                    gen_expr(ctx, e->args[0]);
+                    gen_expr(ctx, e->args[1]);
+                    gen_expr(ctx, e->args[2]);
+                }
+                emit(ctx, OP_ARRAY_SET, e->line);
+                emit(ctx, OP_NIL, e->line);
+                break;
+            }
+
+            /* array_len(arr) — get length */
+            if (nlen == 9 && memcmp(name, "array_len", 9) == 0) {
+                if (e->arg_count >= 1) {
+                    gen_expr(ctx, e->args[0]);
+                }
+                emit(ctx, OP_ARRAY_LEN, e->line);
+                break;
+            }
+
+            /* array_push(arr, val) — append */
+            if (nlen == 10 && memcmp(name, "array_push", 10) == 0) {
+                if (e->arg_count >= 2) {
+                    gen_expr(ctx, e->args[0]);
+                    gen_expr(ctx, e->args[1]);
+                }
+                emit(ctx, OP_ARRAY_PUSH, e->line);
+                emit(ctx, OP_NIL, e->line);
+                break;
+            }
+
             /* read_file(path) — read file contents */
             if (nlen == 9 && memcmp(name, "read_file", 9) == 0) {
                 if (e->arg_count >= 1) {
