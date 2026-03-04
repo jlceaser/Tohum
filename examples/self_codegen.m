@@ -226,6 +226,7 @@ var node_data: i32 = 0;
 var node_extra: i32 = 0;
 var node_extra2: i32 = 0;
 var node_names: i32 = 0;
+var node_tnames: i32 = 0;
 var node_count: i32 = 0;
 var child_lists: i32 = 0;
 var child_count: i32 = 0;
@@ -236,6 +237,7 @@ fn init_ast() -> i32 {
     node_extra = array_new(0);
     node_extra2 = array_new(0);
     node_names = array_new(0);
+    node_tnames = array_new(0);
     child_lists = array_new(0);
     node_count = 0;
     child_count = 0;
@@ -249,6 +251,7 @@ fn new_node(kind: i32, data: i32, extra: i32, extra2: i32, name: string) -> i32 
     array_push(node_extra, extra);
     array_push(node_extra2, extra2);
     array_push(node_names, name);
+    array_push(node_tnames, "");
     node_count = node_count + 1;
     return idx;
 }
@@ -269,6 +272,8 @@ fn nd(idx: i32) -> i32  { return array_get(node_data, idx); }
 fn ne(idx: i32) -> i32  { return array_get(node_extra, idx); }
 fn ne2(idx: i32) -> i32 { return array_get(node_extra2, idx); }
 fn nn(idx: i32) -> string { return array_get(node_names, idx); }
+fn nt(idx: i32) -> string { return array_get(node_tnames, idx); }
+fn set_nt(idx: i32, t: string) -> i32 { array_set(node_tnames, idx, t); return 0; }
 fn child(start: i32, i: i32) -> i32 { return array_get(child_lists, start + i); }
 
 // ── Expression parser ────────────────────────────────
@@ -418,11 +423,14 @@ fn parse_stmt() -> i32 {
         if peek() == TK_KW_VAR() { is_var = 1; }
         advance();
         let name: string = advance_val();
-        if match_tok(TK_COLON()) { parse_type(); }
+        var vtype: string = "i32";
+        if match_tok(TK_COLON()) { vtype = parse_type(); }
         var init: i32 = 0 - 1;
         if match_tok(TK_ASSIGN()) { init = parse_expr(); }
         expect(TK_SEMI(), "';'");
-        return new_node(NK_LET(), init, is_var, 0, name);
+        let vnode: i32 = new_node(NK_LET(), init, is_var, 0, name);
+        set_nt(vnode, vtype);
+        return vnode;
     }
     if peek() == TK_KW_RETURN() {
         advance();
@@ -472,25 +480,33 @@ fn parse_fn_decl() -> i32 {
     while peek() != TK_RPAREN() && peek() != TK_EOF() {
         let pname: string = advance_val();
         expect(TK_COLON(), "':'");
-        parse_type();
-        array_push(params, new_node(NK_LET(), 0 - 1, 0, 0, pname));
+        let ptype: string = parse_type();
+        let pnode: i32 = new_node(NK_LET(), 0 - 1, 0, 0, pname);
+        set_nt(pnode, ptype);
+        array_push(params, pnode);
         if peek() != TK_RPAREN() { expect(TK_COMMA(), "','"); }
     }
     expect(TK_RPAREN(), "')'");
-    if match_tok(TK_ARROW()) { parse_type(); }
+    var ret_type: string = "void";
+    if match_tok(TK_ARROW()) { ret_type = parse_type(); }
     var body: i32 = 0 - 1;
     if peek() == TK_SEMI() { advance(); } else { body = parse_block(); }
     let ps: i32 = flush_children(params);
-    return new_node(NK_FN_DECL(), body, ps, array_len(params), name);
+    let fn_node: i32 = new_node(NK_FN_DECL(), body, ps, array_len(params), name);
+    set_nt(fn_node, ret_type);
+    return fn_node;
 }
 
 fn parse_global_var() -> i32 {
     let name: string = advance_val();
-    if match_tok(TK_COLON()) { parse_type(); }
+    var gtype: string = "i32";
+    if match_tok(TK_COLON()) { gtype = parse_type(); }
     var init: i32 = 0 - 1;
     if match_tok(TK_ASSIGN()) { init = parse_expr(); }
     expect(TK_SEMI(), "';'");
-    return new_node(NK_VAR_DECL(), init, 0, 0, name);
+    let gnode: i32 = new_node(NK_VAR_DECL(), init, 0, 0, name);
+    set_nt(gnode, gtype);
+    return gnode;
 }
 
 fn parse_program() -> i32 {
@@ -1919,13 +1935,13 @@ fn resolve_uses(src: string, base_dir: string) -> string {
     var pos: i32 = 0;
 
     while pos < len(src) {
-        // Skip blank lines and whitespace at line start
         let line_start: i32 = pos;
+        // Skip whitespace at line start
         while pos < len(src) && (char_at(src, pos) == 32 || char_at(src, pos) == 9) {
             pos = pos + 1;
         }
 
-        // Check for "use " (4 chars: u=117, s=115, e=101, space=32)
+        // Check for "use "
         if pos + 4 <= len(src) && str_eq(substr(src, pos, 4), "use ") {
             pos = pos + 4;
             while pos < len(src) && char_at(src, pos) == 32 { pos = pos + 1; }
@@ -1944,7 +1960,6 @@ fn resolve_uses(src: string, base_dir: string) -> string {
                     // Build full path (relative to base_dir)
                     var full_path: string = path;
                     if len(base_dir) > 0 {
-                        // Check if path is absolute (starts with / or X:)
                         let first: i32 = char_at(path, 0);
                         if first != 47 && first != 92 {
                             if len(path) < 2 || char_at(path, 1) != 58 {
@@ -1961,15 +1976,581 @@ fn resolve_uses(src: string, base_dir: string) -> string {
                         result = str_concat(result, resolved);
                         result = str_concat(result, "\n");
                     }
-                    // Skip this use line (already consumed)
                 }
             }
         } else {
-            // Not a use line — copy this line and all remaining source
-            // (once we hit a non-use line, stop looking for use directives)
-            result = str_concat(result, substr(src, line_start, len(src) - line_start));
-            return result;
+            // Not a use line — copy line as-is and keep scanning
+            pos = line_start;
+            while pos < len(src) && char_at(src, pos) != 10 { pos = pos + 1; }
+            result = str_concat(result, substr(src, line_start, pos - line_start));
+            if pos < len(src) && char_at(src, pos) == 10 {
+                result = str_concat(result, "\n");
+                pos = pos + 1;
+            }
         }
+    }
+
+    return result;
+}
+
+// ══════════════════════════════════════════════════════
+// ── M → C TRANSPILER ─────────────────────────────────
+// ══════════════════════════════════════════════════════
+// Walks the AST and emits C source code instead of bytecode.
+// M programs become native executables via gcc.
+
+fn cc(a: string, b: string) -> string { return str_concat(a, b); }
+
+fn c_type(t: string) -> string {
+    if str_eq(t, "i32") { return "int"; }
+    if str_eq(t, "i64") { return "long long"; }
+    if str_eq(t, "f64") { return "double"; }
+    if str_eq(t, "bool") { return "int"; }
+    if str_eq(t, "string") { return "const char*"; }
+    if str_eq(t, "void") { return "void"; }
+    if str_eq(t, "") { return "int"; }
+    return "int";
+}
+
+fn make_indent(level: i32) -> string {
+    var s: string = "";
+    var i: i32 = 0;
+    while i < level { s = cc(s, "    "); i = i + 1; }
+    return s;
+}
+
+fn str_contains(haystack: string, needle: string) -> i32 {
+    if len(needle) > len(haystack) { return 0; }
+    var i: i32 = 0;
+    while i <= len(haystack) - len(needle) {
+        if str_eq(substr(haystack, i, len(needle)), needle) { return 1; }
+        i = i + 1;
+    }
+    return 0;
+}
+
+// ── C codegen type tracking ─────────────────────────
+
+var c_fn_names: i32 = 0;
+var c_fn_rets: i32 = 0;
+var c_vr_names: i32 = 0;
+var c_vr_types: i32 = 0;
+
+fn init_c_types() -> i32 {
+    c_fn_names = array_new(0);
+    c_fn_rets = array_new(0);
+    c_vr_names = array_new(0);
+    c_vr_types = array_new(0);
+    return 0;
+}
+
+fn c_add_func(name: string, ret: string) -> i32 {
+    array_push(c_fn_names, name);
+    array_push(c_fn_rets, ret);
+    return 0;
+}
+
+fn c_func_ret(name: string) -> string {
+    var i: i32 = 0;
+    while i < array_len(c_fn_names) {
+        if str_eq(array_get(c_fn_names, i), name) { return array_get(c_fn_rets, i); }
+        i = i + 1;
+    }
+    return "i32";
+}
+
+fn c_add_var(name: string, t: string) -> i32 {
+    var i: i32 = 0;
+    while i < array_len(c_vr_names) {
+        if str_eq(array_get(c_vr_names, i), name) { array_set(c_vr_types, i, t); return 0; }
+        i = i + 1;
+    }
+    array_push(c_vr_names, name);
+    array_push(c_vr_types, t);
+    return 0;
+}
+
+fn c_var_type(name: string) -> string {
+    var i: i32 = 0;
+    while i < array_len(c_vr_names) {
+        if str_eq(array_get(c_vr_names, i), name) { return array_get(c_vr_types, i); }
+        i = i + 1;
+    }
+    return "i32";
+}
+
+fn c_clear_vars() -> i32 {
+    c_vr_names = array_new(0);
+    c_vr_types = array_new(0);
+    return 0;
+}
+
+fn infer_type(idx: i32) -> string {
+    if idx < 0 { return "i32"; }
+    let kind: i32 = nk(idx);
+    if kind == NK_INT_LIT() { return "i32"; }
+    if kind == NK_STR_LIT() { return "string"; }
+    if kind == NK_BOOL_LIT() { return "bool"; }
+    if kind == NK_IDENT() { return c_var_type(nn(idx)); }
+    if kind == NK_BINARY() {
+        let op: i32 = ne2(idx);
+        if op == TK_EQ() || op == TK_NEQ() || op == TK_LT() || op == TK_GT() || op == TK_LTE() || op == TK_GTE() || op == TK_AND() || op == TK_OR() { return "bool"; }
+        return infer_type(nd(idx));
+    }
+    if kind == NK_UNARY() { return "i32"; }
+    if kind == NK_CALL() {
+        let callee: i32 = nd(idx);
+        let name: string = nn(callee);
+        if str_eq(name, "int_to_str") { return "string"; }
+        if str_eq(name, "str_concat") { return "string"; }
+        if str_eq(name, "substr") { return "string"; }
+        if str_eq(name, "char_to_str") { return "string"; }
+        if str_eq(name, "read_file") { return "string"; }
+        if str_eq(name, "argv") { return "string"; }
+        if str_eq(name, "len") { return "i32"; }
+        if str_eq(name, "char_at") { return "i32"; }
+        if str_eq(name, "str_eq") { return "bool"; }
+        if str_eq(name, "array_new") { return "i32"; }
+        if str_eq(name, "array_len") { return "i32"; }
+        if str_eq(name, "array_get") { return "i32"; }
+        if str_eq(name, "argc") { return "i32"; }
+        return c_func_ret(name);
+    }
+    return "i32";
+}
+
+// ── C expression generation ─────────────────────────
+
+// Wrap expression with (const char*) cast if it's not already a string
+fn gen_c_str_arg(idx: i32) -> string {
+    let expr: string = gen_c_expr(idx);
+    if str_eq(infer_type(idx), "string") { return expr; }
+    return cc("(const char*)", expr);
+}
+
+fn gen_c_expr(idx: i32) -> string {
+    if idx < 0 { return "0"; }
+    let kind: i32 = nk(idx);
+
+    if kind == NK_INT_LIT() { return nn(idx); }
+
+    if kind == NK_STR_LIT() {
+        // nn(idx) has raw content with escape sequences intact
+        return cc("\"", cc(nn(idx), "\""));
+    }
+
+    if kind == NK_BOOL_LIT() {
+        if nd(idx) != 0 { return "1"; }
+        return "0";
+    }
+
+    if kind == NK_IDENT() { return nn(idx); }
+
+    if kind == NK_UNARY() {
+        let operand: string = gen_c_expr(nd(idx));
+        let op: i32 = ne(idx);
+        if op == 31 { return cc("(-", cc(operand, ")")); }
+        if op == 43 { return cc("(!", cc(operand, ")")); }
+        return operand;
+    }
+
+    if kind == NK_BINARY() {
+        let left: string = gen_c_expr(nd(idx));
+        let right: string = gen_c_expr(ne(idx));
+        let op: i32 = ne2(idx);
+        var op_str: string = " + ";
+        if op == TK_MINUS() { op_str = " - "; }
+        if op == TK_STAR()  { op_str = " * "; }
+        if op == TK_SLASH() { op_str = " / "; }
+        if op == TK_MOD()   { op_str = " % "; }
+        if op == TK_EQ()    { op_str = " == "; }
+        if op == TK_NEQ()   { op_str = " != "; }
+        if op == TK_LT()    { op_str = " < "; }
+        if op == TK_GT()    { op_str = " > "; }
+        if op == TK_LTE()   { op_str = " <= "; }
+        if op == TK_GTE()   { op_str = " >= "; }
+        if op == TK_AND()   { op_str = " && "; }
+        if op == TK_OR()    { op_str = " || "; }
+        return cc("(", cc(left, cc(op_str, cc(right, ")"))));
+    }
+
+    if kind == NK_CALL() {
+        let callee_idx: i32 = nd(idx);
+        let arg_start: i32 = ne(idx);
+        let argc: i32 = ne2(idx);
+        let name: string = nn(callee_idx);
+
+        // Built-in: print
+        if str_eq(name, "print") {
+            if argc >= 1 {
+                let arg: i32 = child(arg_start, 0);
+                let atype: string = infer_type(arg);
+                if str_eq(atype, "string") {
+                    return cc("printf(\"%s\", ", cc(gen_c_str_arg(arg), ")"));
+                }
+                return cc("printf(\"%d\", ", cc(gen_c_expr(arg), ")"));
+            }
+            return "0";
+        }
+
+        // Built-in: println
+        if str_eq(name, "println") {
+            if argc >= 1 {
+                let arg: i32 = child(arg_start, 0);
+                let atype: string = infer_type(arg);
+                if str_eq(atype, "string") {
+                    return cc("printf(\"%s\\n\", ", cc(gen_c_str_arg(arg), ")"));
+                }
+                return cc("printf(\"%d\\n\", ", cc(gen_c_expr(arg), ")"));
+            }
+            return "printf(\"\\n\")";
+        }
+
+        // Built-in: len
+        if str_eq(name, "len") {
+            if argc >= 1 { return cc("(int)strlen(", cc(gen_c_expr(child(arg_start, 0)), ")")); }
+            return "0";
+        }
+
+        // Built-in: str_eq
+        if str_eq(name, "str_eq") {
+            if argc >= 2 {
+                return cc("(strcmp(", cc(gen_c_str_arg(child(arg_start, 0)), cc(", ", cc(gen_c_str_arg(child(arg_start, 1)), ") == 0)"))));
+            }
+            return "0";
+        }
+
+        // Built-in: int_to_str — requires runtime helper
+        if str_eq(name, "int_to_str") {
+            if argc >= 1 { return cc("m_int_to_str(", cc(gen_c_expr(child(arg_start, 0)), ")")); }
+            return "\"\"";
+        }
+
+        // Built-in: str_concat — requires runtime helper
+        if str_eq(name, "str_concat") {
+            if argc >= 2 {
+                return cc("m_str_concat(", cc(gen_c_str_arg(child(arg_start, 0)), cc(", ", cc(gen_c_str_arg(child(arg_start, 1)), ")"))));
+            }
+            return "\"\"";
+        }
+
+        // Built-in: char_at
+        if str_eq(name, "char_at") {
+            if argc >= 2 {
+                return cc("(int)", cc(gen_c_expr(child(arg_start, 0)), cc("[", cc(gen_c_expr(child(arg_start, 1)), "]"))));
+            }
+            return "0";
+        }
+
+        // Built-in: substr — requires runtime helper
+        if str_eq(name, "substr") {
+            if argc >= 3 {
+                return cc("m_substr(", cc(gen_c_expr(child(arg_start, 0)), cc(", ", cc(gen_c_expr(child(arg_start, 1)), cc(", ", cc(gen_c_expr(child(arg_start, 2)), ")"))))));
+            }
+            return "\"\"";
+        }
+
+        // Built-in: char_to_str
+        if str_eq(name, "char_to_str") {
+            if argc >= 1 { return cc("m_char_to_str(", cc(gen_c_expr(child(arg_start, 0)), ")")); }
+            return "\"\"";
+        }
+
+        // Built-in: array_push — cast string args to long long
+        if str_eq(name, "array_push") {
+            if argc >= 2 {
+                let val_arg: i32 = child(arg_start, 1);
+                let val_type: string = infer_type(val_arg);
+                if str_eq(val_type, "string") {
+                    return cc("array_push(", cc(gen_c_expr(child(arg_start, 0)), cc(", (long long)", cc(gen_c_expr(val_arg), ")"))));
+                }
+                return cc("array_push(", cc(gen_c_expr(child(arg_start, 0)), cc(", ", cc(gen_c_expr(val_arg), ")"))));
+            }
+            return "0";
+        }
+
+        // Built-in: array_get — cast result based on context
+        // (handled at usage sites via infer_type)
+
+        // Regular function call
+        var result: string = cc(name, "(");
+        var i: i32 = 0;
+        while i < argc {
+            if i > 0 { result = cc(result, ", "); }
+            result = cc(result, gen_c_expr(child(arg_start, i)));
+            i = i + 1;
+        }
+        return cc(result, ")");
+    }
+
+    return "0";
+}
+
+// ── C statement generation ──────────────────────────
+
+fn gen_c_stmt(idx: i32, level: i32) -> string {
+    if idx < 0 { return ""; }
+    let kind: i32 = nk(idx);
+    let ind: string = make_indent(level);
+
+    if kind == NK_LET() {
+        let name: string = nn(idx);
+        let vt: string = nt(idx);
+        c_add_var(name, vt);
+        let type_str: string = c_type(vt);
+        let init: i32 = nd(idx);
+        if init >= 0 {
+            return cc(ind, cc(type_str, cc(" ", cc(name, cc(" = ", cc(gen_c_expr(init), ";\n"))))));
+        }
+        if str_eq(vt, "string") {
+            return cc(ind, cc(type_str, cc(" ", cc(name, " = \"\";\n"))));
+        }
+        return cc(ind, cc(type_str, cc(" ", cc(name, " = 0;\n"))));
+    }
+
+    if kind == NK_ASSIGN() {
+        let target: i32 = nd(idx);
+        let val: i32 = ne(idx);
+        return cc(ind, cc(nn(target), cc(" = ", cc(gen_c_expr(val), ";\n"))));
+    }
+
+    if kind == NK_RETURN() {
+        let val: i32 = nd(idx);
+        if val >= 0 {
+            return cc(ind, cc("return ", cc(gen_c_expr(val), ";\n")));
+        }
+        return cc(ind, "return;\n");
+    }
+
+    if kind == NK_IF() {
+        let cond: i32 = nd(idx);
+        let then_b: i32 = ne(idx);
+        let else_b: i32 = ne2(idx);
+        var result: string = cc(ind, cc("if (", cc(gen_c_expr(cond), ") {\n")));
+        result = cc(result, gen_c_stmt(then_b, level + 1));
+        if else_b >= 0 {
+            result = cc(result, cc(ind, "} else {\n"));
+            result = cc(result, gen_c_stmt(else_b, level + 1));
+        }
+        result = cc(result, cc(ind, "}\n"));
+        return result;
+    }
+
+    if kind == NK_WHILE() {
+        let cond: i32 = nd(idx);
+        let body: i32 = ne(idx);
+        var result: string = cc(ind, cc("while (", cc(gen_c_expr(cond), ") {\n")));
+        result = cc(result, gen_c_stmt(body, level + 1));
+        result = cc(result, cc(ind, "}\n"));
+        return result;
+    }
+
+    if kind == NK_BLOCK() {
+        let start: i32 = nd(idx);
+        let count: i32 = ne(idx);
+        var result: string = "";
+        var i: i32 = 0;
+        while i < count {
+            result = cc(result, gen_c_stmt(child(start, i), level));
+            i = i + 1;
+        }
+        return result;
+    }
+
+    if kind == NK_EXPR_STMT() {
+        return cc(ind, cc(gen_c_expr(nd(idx)), ";\n"));
+    }
+
+    return "";
+}
+
+// ── C function generation ───────────────────────────
+
+fn gen_c_func(idx: i32) -> string {
+    let name: string = nn(idx);
+    let body: i32 = nd(idx);
+    let param_start: i32 = ne(idx);
+    let param_count: i32 = ne2(idx);
+    let ret_type: string = c_type(nt(idx));
+
+    // Register param types for type inference
+    c_clear_vars();
+    var i: i32 = 0;
+    while i < param_count {
+        let pnode: i32 = child(param_start, i);
+        c_add_var(nn(pnode), nt(pnode));
+        i = i + 1;
+    }
+
+    // Build signature
+    var sig: string = cc(ret_type, cc(" ", cc(name, "(")));
+    if param_count == 0 {
+        sig = cc(sig, "void");
+    } else {
+        i = 0;
+        while i < param_count {
+            if i > 0 { sig = cc(sig, ", "); }
+            let pnode: i32 = child(param_start, i);
+            sig = cc(sig, cc(c_type(nt(pnode)), cc(" ", nn(pnode))));
+            i = i + 1;
+        }
+    }
+    sig = cc(sig, ")");
+
+    var result: string = cc(sig, " {\n");
+    if body >= 0 {
+        if nk(body) == NK_BLOCK() {
+            let start: i32 = nd(body);
+            let count: i32 = ne(body);
+            var j: i32 = 0;
+            while j < count {
+                result = cc(result, gen_c_stmt(child(start, j), 1));
+                j = j + 1;
+            }
+        } else {
+            result = cc(result, gen_c_stmt(body, 1));
+        }
+    }
+    result = cc(result, "}\n");
+    return result;
+}
+
+// ── C program generation ────────────────────────────
+
+fn c_runtime() -> string {
+    var r: string = "// M runtime — strings\n";
+    r = cc(r, "static char _str_buf[262144];\n");
+    r = cc(r, "static int _str_off = 0;\n");
+    r = cc(r, "static const char* m_str_alloc(const char* s, int len) {\n");
+    r = cc(r, "    char* p = _str_buf + _str_off;\n");
+    r = cc(r, "    memcpy(p, s, len); p[len] = 0;\n");
+    r = cc(r, "    _str_off += len + 1;\n");
+    r = cc(r, "    return p;\n");
+    r = cc(r, "}\n");
+    r = cc(r, "static const char* m_str_concat(const char* a, const char* b) {\n");
+    r = cc(r, "    int la = strlen(a), lb = strlen(b);\n");
+    r = cc(r, "    char* p = _str_buf + _str_off;\n");
+    r = cc(r, "    memcpy(p, a, la); memcpy(p+la, b, lb); p[la+lb] = 0;\n");
+    r = cc(r, "    _str_off += la + lb + 1;\n");
+    r = cc(r, "    return p;\n");
+    r = cc(r, "}\n");
+    r = cc(r, "static const char* m_substr(const char* s, int start, int len) {\n");
+    r = cc(r, "    return m_str_alloc(s + start, len);\n");
+    r = cc(r, "}\n");
+    r = cc(r, "static const char* m_int_to_str(int n) {\n");
+    r = cc(r, "    char* p = _str_buf + _str_off;\n");
+    r = cc(r, "    int len = sprintf(p, \"%d\", n);\n");
+    r = cc(r, "    _str_off += len + 1;\n");
+    r = cc(r, "    return p;\n");
+    r = cc(r, "}\n");
+    r = cc(r, "static const char* m_char_to_str(int c) {\n");
+    r = cc(r, "    char* p = _str_buf + _str_off;\n");
+    r = cc(r, "    p[0] = (char)c; p[1] = 0;\n");
+    r = cc(r, "    _str_off += 2;\n");
+    r = cc(r, "    return p;\n");
+    r = cc(r, "}\n\n");
+    r = cc(r, "// M runtime — arrays (dynamic, long long values)\n");
+    r = cc(r, "typedef struct { long long* data; int len; int cap; } MArray;\n");
+    r = cc(r, "static MArray _arrays[4096];\n");
+    r = cc(r, "static int _arr_count = 0;\n");
+    r = cc(r, "static int array_new(int cap) {\n");
+    r = cc(r, "    int id = _arr_count++;\n");
+    r = cc(r, "    _arrays[id].cap = cap > 0 ? cap : 8;\n");
+    r = cc(r, "    _arrays[id].data = (long long*)malloc(_arrays[id].cap * sizeof(long long));\n");
+    r = cc(r, "    _arrays[id].len = 0;\n");
+    r = cc(r, "    return id;\n");
+    r = cc(r, "}\n");
+    r = cc(r, "static void array_push(int id, long long val) {\n");
+    r = cc(r, "    MArray* a = &_arrays[id];\n");
+    r = cc(r, "    if (a->len >= a->cap) { a->cap *= 2; a->data = (long long*)realloc(a->data, a->cap * sizeof(long long)); }\n");
+    r = cc(r, "    a->data[a->len++] = val;\n");
+    r = cc(r, "}\n");
+    r = cc(r, "static long long array_get(int id, int idx) { return _arrays[id].data[idx]; }\n");
+    r = cc(r, "static void array_set(int id, int idx, long long val) { _arrays[id].data[idx] = val; }\n");
+    r = cc(r, "static int array_len(int id) { return _arrays[id].len; }\n\n");
+    return r;
+}
+
+fn gen_c_program(root: i32) -> string {
+    let start: i32 = nd(root);
+    let count: i32 = ne(root);
+
+    // Init type tracking and populate function types
+    init_c_types();
+    var i: i32 = 0;
+    while i < count {
+        let decl: i32 = child(start, i);
+        if nk(decl) == NK_FN_DECL() {
+            c_add_func(nn(decl), nt(decl));
+        }
+        if nk(decl) == NK_VAR_DECL() {
+            c_add_var(nn(decl), nt(decl));
+        }
+        i = i + 1;
+    }
+
+    // Header
+    var result: string = "// Generated by Machine M -> C transpiler\n";
+    result = cc(result, "#include <stdio.h>\n");
+    result = cc(result, "#include <stdlib.h>\n");
+    result = cc(result, "#include <string.h>\n\n");
+    result = cc(result, c_runtime());
+
+    // Forward declarations
+    i = 0;
+    while i < count {
+        let decl: i32 = child(start, i);
+        if nk(decl) == NK_FN_DECL() && nd(decl) >= 0 {
+            let name: string = nn(decl);
+            if !str_eq(name, "main") {
+                let ret: string = c_type(nt(decl));
+                var fwd: string = cc(ret, cc(" ", cc(name, "(")));
+                let ps: i32 = ne(decl);
+                let pc: i32 = ne2(decl);
+                if pc == 0 {
+                    fwd = cc(fwd, "void");
+                } else {
+                    var j: i32 = 0;
+                    while j < pc {
+                        if j > 0 { fwd = cc(fwd, ", "); }
+                        fwd = cc(fwd, c_type(nt(child(ps, j))));
+                        j = j + 1;
+                    }
+                }
+                fwd = cc(fwd, ");\n");
+                result = cc(result, fwd);
+            }
+        }
+        i = i + 1;
+    }
+    result = cc(result, "\n");
+
+    // Global variables
+    i = 0;
+    while i < count {
+        let decl: i32 = child(start, i);
+        if nk(decl) == NK_VAR_DECL() {
+            let name: string = nn(decl);
+            let gtype: string = c_type(nt(decl));
+            let init: i32 = nd(decl);
+            if init >= 0 {
+                result = cc(result, cc(gtype, cc(" ", cc(name, cc(" = ", cc(gen_c_expr(init), ";\n"))))));
+            } else {
+                result = cc(result, cc(gtype, cc(" ", cc(name, " = 0;\n"))));
+            }
+        }
+        i = i + 1;
+    }
+
+    // Functions
+    i = 0;
+    while i < count {
+        let decl: i32 = child(start, i);
+        if nk(decl) == NK_FN_DECL() && nd(decl) >= 0 {
+            result = cc(result, "\n");
+            result = cc(result, gen_c_func(decl));
+        }
+        i = i + 1;
     }
 
     return result;
@@ -1980,6 +2561,29 @@ fn main() -> i32 {
     // If called with arguments, act as a compiler: compile and run the file.
     // Usage: mc self_codegen.m <file.m> [args...]
     if argc() >= 2 {
+        // --emit-c: M -> C transpiler mode
+        if str_eq(argv(1), "--emit-c") {
+            if argc() < 3 {
+                println("usage: mc self_codegen.m --emit-c <file.m> [output.c]");
+                return 1;
+            }
+            let target: string = argv(2);
+            let raw_src: string = read_file(target);
+            init_use_system();
+            let src: string = resolve_uses(raw_src, get_dir(target));
+            init_ast();
+            tokenize(src);
+            let root: i32 = parse_program();
+            let c_code: string = gen_c_program(root);
+            if argc() >= 4 {
+                write_file(argv(3), c_code);
+            } else {
+                print(c_code);
+            }
+            return 0;
+        }
+
+        // Default: compile and run mode
         let target: string = argv(1);
         let raw_src: string = read_file(target);
         init_use_system();
@@ -2119,6 +2723,55 @@ fn main() -> i32 {
 
     // ── Integration: global string var ───────────
     run_test("var buf: string = \"\"; fn emit(s: string) -> i32 { buf = str_concat(buf, s); return 0; } fn main() -> i32 { emit(\"hello\"); emit(\" \"); emit(\"world\"); print(buf); return len(buf); }", 11, "hello world", "global string emit");
+
+    // ── M -> C transpiler ────────────────────────
+    tests_run = tests_run + 1;
+    init_ast();
+    tokenize("fn main() -> i32 { return 42; }");
+    let tc_root1: i32 = parse_program();
+    let tc_out1: string = gen_c_program(tc_root1);
+    if str_contains(tc_out1, "return 42;") && str_contains(tc_out1, "int main(") {
+        tests_passed = tests_passed + 1;
+        println("  OK  emit-c: return 42");
+    } else {
+        println("  FAIL emit-c: return 42");
+    }
+
+    tests_run = tests_run + 1;
+    init_ast();
+    tokenize("fn add(a: i32, b: i32) -> i32 { return a + b; } fn main() -> i32 { return add(3, 4); }");
+    let tc_root2: i32 = parse_program();
+    let tc_out2: string = gen_c_program(tc_root2);
+    if str_contains(tc_out2, "int add(int a, int b)") && str_contains(tc_out2, "return (a + b);") && str_contains(tc_out2, "return add(3, 4);") {
+        tests_passed = tests_passed + 1;
+        println("  OK  emit-c: function call");
+    } else {
+        println("  FAIL emit-c: function call");
+    }
+
+    tests_run = tests_run + 1;
+    init_ast();
+    tokenize("var g: i32 = 0; fn inc() -> i32 { g = g + 1; return g; } fn main() -> i32 { inc(); inc(); return g; }");
+    let tc_root3: i32 = parse_program();
+    let tc_out3: string = gen_c_program(tc_root3);
+    if str_contains(tc_out3, "int g = 0;") && str_contains(tc_out3, "g = (g + 1);") {
+        tests_passed = tests_passed + 1;
+        println("  OK  emit-c: global var");
+    } else {
+        println("  FAIL emit-c: global var");
+    }
+
+    tests_run = tests_run + 1;
+    init_ast();
+    tokenize("fn fib(n: i32) -> i32 { if n <= 1 { return n; } return fib(n - 1) + fib(n - 2); } fn main() -> i32 { return fib(10); }");
+    let tc_root4: i32 = parse_program();
+    let tc_out4: string = gen_c_program(tc_root4);
+    if str_contains(tc_out4, "int fib(int n)") && str_contains(tc_out4, "return (fib((n - 1)) + fib((n - 2)));") {
+        tests_passed = tests_passed + 1;
+        println("  OK  emit-c: fibonacci");
+    } else {
+        println("  FAIL emit-c: fibonacci");
+    }
 
     // ── File compilation ─────────────────────────
     run_file_test("examples/test_medium.m", 10, "10|20|0,1,2,3,4|3|600|hello machine\n", "file: medium program");
