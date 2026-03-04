@@ -485,3 +485,237 @@ fn ana_max_func_name() -> string {
     }
     return max_name;
 }
+
+// ── Cross-file dependency analysis ──────────────────
+// Recursively follows `use` directives and builds a project-wide view.
+//
+// Per-file records (parallel arrays, indexed by file index):
+//   ana_all_files        — file paths
+//   ana_all_fn_names     — array of arrays: function name sp-indices per file
+//   ana_all_fn_counts    — function count per file
+//   ana_all_use_paths    — array of arrays: use path sp-indices per file
+//   ana_all_use_counts   — use count per file
+
+var ana_all_files: i32 = 0;
+var ana_all_fn_names: i32 = 0;
+var ana_all_fn_counts: i32 = 0;
+var ana_all_use_paths_arr: i32 = 0;
+var ana_all_use_counts: i32 = 0;
+var ana_all_file_count: i32 = 0;
+var ana_all_func_total: i32 = 0;
+
+fn ana_multi_init() {
+    ana_all_files = array_new(0);
+    ana_all_fn_names = array_new(0);
+    ana_all_fn_counts = array_new(0);
+    ana_all_use_paths_arr = array_new(0);
+    ana_all_use_counts = array_new(0);
+    ana_all_file_count = 0;
+    ana_all_func_total = 0;
+}
+
+// Extract directory prefix from a path.
+// "examples/foo.m" -> "examples/"
+// "foo.m" -> ""
+fn ana_get_dir(path: string) -> string {
+    let slen: i32 = len(path);
+    // Scan backwards for '/' (47) or '\' (92)
+    var last_sep: i32 = 0 - 1;
+    var i: i32 = slen - 1;
+    while i >= 0 {
+        let c: i32 = char_at(path, i);
+        if c == 47 || c == 92 {
+            last_sep = i;
+            i = 0 - 1;  // exit loop (no break in M)
+        } else {
+            i = i - 1;
+        }
+    }
+    if last_sep < 0 { return ""; }
+    return substr(path, 0, last_sep + 1);
+}
+
+// Check if a file path is already in the multi-file list.
+fn ana_already_analyzed(path: string) -> bool {
+    var i: i32 = 0;
+    while i < ana_all_file_count {
+        if str_eq(sp_get(array_get(ana_all_files, i)), path) { return true; }
+        i = i + 1;
+    }
+    return false;
+}
+
+// Resolve a use path relative to the parent file's directory.
+// parent="examples/machine_analyze.m", use_path="machine_vm.m"
+// -> "examples/machine_vm.m"
+fn ana_resolve_use_path(parent_path: string, use_path: string) -> string {
+    let dir: string = ana_get_dir(parent_path);
+    if len(dir) == 0 { return use_path; }
+    return str_concat(dir, use_path);
+}
+
+// Record current single-file analysis results into multi-file storage.
+fn ana_record_current() {
+    let file_idx: i32 = ana_all_file_count;
+    array_push(ana_all_files, sp_store(ana_file));
+    array_push(ana_all_fn_counts, ana_fn_count);
+    array_push(ana_all_use_counts, ana_use_count);
+
+    // Copy function names for this file
+    var fnames: i32 = array_new(0);
+    var i: i32 = 0;
+    while i < ana_fn_count {
+        array_push(fnames, array_get(ana_fn_names, i));
+        i = i + 1;
+    }
+    array_push(ana_all_fn_names, fnames);
+
+    // Copy use paths for this file
+    var upaths: i32 = array_new(0);
+    i = 0;
+    while i < ana_use_count {
+        array_push(upaths, array_get(ana_use_paths, i));
+        i = i + 1;
+    }
+    array_push(ana_all_use_paths_arr, upaths);
+
+    ana_all_file_count = ana_all_file_count + 1;
+    ana_all_func_total = ana_all_func_total + ana_fn_count;
+}
+
+// Recursively analyze a file and all its `use` dependencies.
+// Returns the number of files analyzed (including this one), or -1 on error.
+fn ana_resolve_deps(path: string) -> i32 {
+    if ana_already_analyzed(path) { return 0; }
+
+    // Analyze the file
+    let r: i32 = analyze_file(path);
+    if r < 0 { return 0 - 1; }
+
+    // Snapshot single-file results before recursing (analyze_file resets state)
+    let this_fn_count: i32 = ana_fn_count;
+    let this_use_count: i32 = ana_use_count;
+
+    // Collect use paths before they get overwritten
+    var dep_paths: i32 = array_new(0);
+    var i: i32 = 0;
+    while i < this_use_count {
+        let resolved: string = ana_resolve_use_path(path, ana_use_path(i));
+        array_push(dep_paths, sp_store(resolved));
+        i = i + 1;
+    }
+
+    // Record this file into multi-file storage
+    ana_record_current();
+    var files_added: i32 = 1;
+
+    // Recurse into dependencies
+    i = 0;
+    while i < array_len(dep_paths) {
+        let dep: string = sp_get(array_get(dep_paths, i));
+        if !ana_already_analyzed(dep) {
+            let sub: i32 = ana_resolve_deps(dep);
+            if sub > 0 {
+                files_added = files_added + sub;
+            }
+            // sub < 0 means file unreadable — skip silently (no try/catch in M)
+        }
+        i = i + 1;
+    }
+
+    return files_added;
+}
+
+// Search all analyzed files to find which file defines a function.
+// Returns the file path, or "" if not found.
+fn ana_who_defines(func_name: string) -> string {
+    var fi: i32 = 0;
+    while fi < ana_all_file_count {
+        let fnames: i32 = array_get(ana_all_fn_names, fi);
+        let fcount: i32 = array_get(ana_all_fn_counts, fi);
+        var j: i32 = 0;
+        while j < fcount {
+            if str_eq(sp_get(array_get(fnames, j)), func_name) {
+                return sp_get(array_get(ana_all_files, fi));
+            }
+            j = j + 1;
+        }
+        fi = fi + 1;
+    }
+    return "";
+}
+
+// Check if a function name is defined in a specific file (by file index).
+fn ana_defined_in_file(func_name: string, file_idx: i32) -> bool {
+    if file_idx < 0 || file_idx >= ana_all_file_count { return false; }
+    let fnames: i32 = array_get(ana_all_fn_names, file_idx);
+    let fcount: i32 = array_get(ana_all_fn_counts, file_idx);
+    var j: i32 = 0;
+    while j < fcount {
+        if str_eq(sp_get(array_get(fnames, j)), func_name) { return true; }
+        j = j + 1;
+    }
+    return false;
+}
+
+// Find the file index for a given path. Returns -1 if not found.
+fn ana_file_index(path: string) -> i32 {
+    var i: i32 = 0;
+    while i < ana_all_file_count {
+        if str_eq(sp_get(array_get(ana_all_files, i)), path) { return i; }
+        i = i + 1;
+    }
+    return 0 - 1;
+}
+
+// Get external calls for a function (calls to functions in OTHER files).
+// Must be called after ana_resolve_deps so multi-file data is populated,
+// AND after analyze_file on the file containing func_idx so single-file
+// call graph data is current.
+//
+// Returns an array of sp-indices (call target names defined elsewhere).
+fn ana_external_calls(func_idx: i32) -> i32 {
+    var result: i32 = array_new(0);
+    if func_idx < 0 || func_idx >= ana_fn_count { return result; }
+
+    // Find current file's index in multi-file storage
+    let cur_fi: i32 = ana_file_index(ana_file);
+
+    let calls: i32 = array_get(ana_fn_body_calls, func_idx);
+    let ncalls: i32 = array_len(calls);
+    var i: i32 = 0;
+    while i < ncalls {
+        let call_name: string = sp_get(array_get(calls, i));
+        // Check if this call is NOT defined in the current file
+        if !ana_defined_in_file(call_name, cur_fi) {
+            // Check if it IS defined in any other file
+            let definer: string = ana_who_defines(call_name);
+            if len(definer) > 0 {
+                array_push(result, array_get(calls, i));
+            }
+        }
+        i = i + 1;
+    }
+    return result;
+}
+
+// Get the file path for a given multi-file index.
+fn ana_all_file_path(idx: i32) -> string {
+    if idx < 0 || idx >= ana_all_file_count { return ""; }
+    return sp_get(array_get(ana_all_files, idx));
+}
+
+// Get the function count for a given multi-file index.
+fn ana_all_file_func_count(idx: i32) -> i32 {
+    if idx < 0 || idx >= ana_all_file_count { return 0; }
+    return array_get(ana_all_fn_counts, idx);
+}
+
+// Get a function name from a specific file by file index and function index.
+fn ana_all_file_func_name(file_idx: i32, fn_idx: i32) -> string {
+    if file_idx < 0 || file_idx >= ana_all_file_count { return ""; }
+    let fnames: i32 = array_get(ana_all_fn_names, file_idx);
+    let fcount: i32 = array_get(ana_all_fn_counts, file_idx);
+    if fn_idx < 0 || fn_idx >= fcount { return ""; }
+    return sp_get(array_get(fnames, fn_idx));
+}

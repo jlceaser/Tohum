@@ -18,6 +18,9 @@
 //   funcs                     -list functions from analysis
 //   calls <name>              -show what a function calls
 //   callers <name>            -show who calls a function
+//   search <pattern>          -search functions matching substring
+//   deps                      -show dependency tree (use directives)
+//   top [N]                   -show N largest functions (default 10)
 //   stats                     -show code metrics
 //   help                      -show command reference
 //   quit / exit               -exit the shell
@@ -88,6 +91,17 @@ fn find_char(s: string, c: i32) -> i32 {
     return 0 - 1;
 }
 
+fn str_contains(haystack: string, needle: string) -> bool {
+    if len(needle) > len(haystack) { return false; }
+    var i: i32 = 0;
+    while i <= len(haystack) - len(needle) {
+        if str_eq(substr(haystack, i, len(needle)), needle) { return true; }
+        i = i + 1;
+    }
+    return false;
+}
+
+
 // ── REPL display helpers ─────────────────────────────
 
 fn print_val(vid: i32) {
@@ -147,6 +161,9 @@ fn show_help() {
     println("    funcs                  List functions from analysis");
     println("    calls <name>           Show what a function calls");
     println("    callers <name>         Show who calls a function");
+    println("    search <pattern>       Search functions by name substring");
+    println("    deps                   Show dependency tree (use directives)");
+    println("    top [N]                Show N largest functions (default 10)");
     println("    stats                  Show code metrics");
     println("");
     println("  Values: integers (42), strings (\"hello\"), booleans (true/false)");
@@ -703,6 +720,141 @@ fn cmd_stats() {
     }
 }
 
+fn cmd_search(args: string) {
+    let pattern: string = str_trim(args);
+    if len(pattern) == 0 {
+        println("  Error: use 'search <pattern>'");
+        return;
+    }
+
+    if ana_get_func_count() == 0 {
+        println("  No analysis loaded. Use 'analyze <file.m>' first.");
+        return;
+    }
+
+    print("  Functions matching '");
+    print(pattern);
+    println("':");
+
+    var found: i32 = 0;
+    var i: i32 = 0;
+    while i < ana_get_func_count() {
+        let name: string = ana_func_name(i);
+        if str_contains(name, pattern) {
+            print("    ");
+            print(name);
+            print("  ");
+            print(int_to_str(ana_func_lines(i)));
+            print("L  ");
+            let pc: i32 = ana_func_params(i);
+            print(int_to_str(pc));
+            print(" params");
+            println("");
+            found = found + 1;
+        }
+        i = i + 1;
+    }
+
+    if found == 0 {
+        println("    (no matches)");
+    } else {
+        print("  ");
+        print(int_to_str(found));
+        print(" match");
+        if found > 1 { print("es"); }
+        println("");
+    }
+}
+
+fn cmd_deps() {
+    if ana_get_func_count() == 0 && ana_get_use_count() == 0 {
+        println("  No analysis loaded. Use 'analyze <file.m>' first.");
+        return;
+    }
+
+    print("  Dependencies of ");
+    println(ana_get_file());
+
+    if ana_get_use_count() == 0 {
+        println("    (no dependencies)");
+        return;
+    }
+
+    var i: i32 = 0;
+    while i < ana_get_use_count() {
+        print("    use \"");
+        print(ana_use_path(i));
+        println("\"");
+        i = i + 1;
+    }
+
+    print("  ");
+    print(int_to_str(ana_get_use_count()));
+    println(" dependencies");
+}
+
+fn cmd_top(args: string) {
+    if ana_get_func_count() == 0 {
+        println("  No analysis loaded. Use 'analyze <file.m>' first.");
+        return;
+    }
+
+    let trimmed: string = str_trim(args);
+    var n: i32 = 10;
+    if len(trimmed) > 0 && is_number(trimmed) {
+        n = str_to_int(trimmed);
+        if n <= 0 { n = 10; }
+    }
+    if n > ana_get_func_count() {
+        n = ana_get_func_count();
+    }
+
+    print("  Top ");
+    print(int_to_str(n));
+    println(" largest functions:");
+
+    // Selection sort approach: find max N times using a "used" marker array
+    var used: i32 = array_new(0);
+    var ui: i32 = 0;
+    while ui < ana_get_func_count() {
+        array_push(used, 0);
+        ui = ui + 1;
+    }
+
+    var rank: i32 = 0;
+    while rank < n {
+        var best_idx: i32 = 0 - 1;
+        var best_lines: i32 = 0 - 1;
+        var i: i32 = 0;
+        while i < ana_get_func_count() {
+            if array_get(used, i) == 0 {
+                let l: i32 = ana_func_lines(i);
+                if l > best_lines {
+                    best_lines = l;
+                    best_idx = i;
+                }
+            }
+            i = i + 1;
+        }
+        if best_idx < 0 { break; }
+        array_set(used, best_idx, 1);
+
+        print("    ");
+        print(int_to_str(rank + 1));
+        print(". ");
+        print(ana_func_name(best_idx));
+        print("  ");
+        print(int_to_str(best_lines));
+        print("L  ");
+        print(int_to_str(ana_func_params(best_idx)));
+        print(" params  ");
+        print(int_to_str(ana_func_call_count(best_idx)));
+        println(" calls");
+
+        rank = rank + 1;
+    }
+}
+
 // ── Expression evaluator ─────────────────────────────
 // Tokenizes, parses, compiles to VM bytecode, runs.
 // Supports: integers, variables, +, -, *, /, %, (, ), unary -
@@ -1060,6 +1212,13 @@ fn main() -> i32 {
             cmd_callers(substr(line, 8, len(line) - 8));
         } else if str_eq(line, "stats") {
             cmd_stats();
+        } else if str_starts_with(line, "search ") {
+            cmd_search(substr(line, 7, len(line) - 7));
+        } else if str_eq(line, "deps") {
+            cmd_deps();
+        } else if str_eq(line, "top") || str_starts_with(line, "top ") {
+            if len(line) > 4 { cmd_top(substr(line, 4, len(line) - 4)); }
+            else { cmd_top(""); }
         } else if str_starts_with(line, "bind ") {
             cmd_bind(substr(line, 5, len(line) - 5));
         } else if str_starts_with(line, "load ") {
