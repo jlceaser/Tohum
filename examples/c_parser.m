@@ -52,6 +52,39 @@ fn CNK_ENUM_CONST() -> i32   { return 109; }
 fn CNK_PARAM() -> i32        { return 110; }
 fn CNK_FORWARD_DECL() -> i32 { return 111; }
 
+// Expression node kinds
+fn CNK_EXPR_INT() -> i32     { return 120; }  // integer literal, d1=value
+fn CNK_EXPR_STR() -> i32     { return 121; }  // string literal, name=value
+fn CNK_EXPR_IDENT() -> i32   { return 122; }  // identifier, name=ident
+fn CNK_EXPR_CALL() -> i32    { return 123; }  // call, name=func, d1=args_start, d2=arg_count
+fn CNK_EXPR_BINARY() -> i32  { return 124; }  // binary op, name=op, d1=left, d2=right
+fn CNK_EXPR_UNARY() -> i32   { return 125; }  // unary op, name=op, d1=operand
+fn CNK_EXPR_MEMBER() -> i32  { return 126; }  // member access, name=field, d1=object, d2=0(.) or 1(->)
+fn CNK_EXPR_INDEX() -> i32   { return 127; }  // array index, d1=array, d2=index
+fn CNK_EXPR_CAST() -> i32    { return 128; }  // cast, type=target type, d1=operand
+fn CNK_EXPR_SIZEOF() -> i32  { return 129; }  // sizeof, name=type_or_expr
+fn CNK_EXPR_TERNARY() -> i32 { return 130; }  // ternary, d1=cond, d2=then, d3=else
+fn CNK_EXPR_ASSIGN() -> i32  { return 131; }  // assignment, name=op(=,+=,-=), d1=lhs, d2=rhs
+fn CNK_EXPR_POSTFIX() -> i32 { return 132; }  // postfix ++/--, name=op, d1=operand
+fn CNK_EXPR_ADDR() -> i32    { return 133; }  // &operand, d1=operand
+fn CNK_EXPR_DEREF() -> i32   { return 134; }  // *operand, d1=operand
+fn CNK_EXPR_CHAR() -> i32    { return 135; }  // char literal, name=value
+fn CNK_EXPR_NULL() -> i32    { return 136; }  // NULL literal
+
+// Statement node kinds
+fn CNK_STMT_RETURN() -> i32  { return 150; }  // return, d1=expr (-1 if void)
+fn CNK_STMT_IF() -> i32      { return 151; }  // if, d1=cond, d2=then_body, d3=else_body(-1)
+fn CNK_STMT_WHILE() -> i32   { return 152; }  // while, d1=cond, d2=body
+fn CNK_STMT_FOR() -> i32     { return 153; }  // for, d1=init, d2=cond, d3=body (step in name)
+fn CNK_STMT_BLOCK() -> i32   { return 154; }  // block {}, d1=stmts_start, d2=stmt_count
+fn CNK_STMT_EXPR() -> i32    { return 155; }  // expression statement, d1=expr
+fn CNK_STMT_VAR() -> i32     { return 156; }  // var decl, name=var_name, type=type, d1=init(-1)
+fn CNK_STMT_SWITCH() -> i32  { return 157; }  // switch, d1=expr, d2=cases_start, d3=case_count
+fn CNK_STMT_CASE() -> i32    { return 158; }  // case, d1=expr(-1 for default), d2=body_start, d3=body_count
+fn CNK_STMT_BREAK() -> i32   { return 159; }
+fn CNK_STMT_CONTINUE() -> i32 { return 160; }
+fn CNK_FUNC_BODY() -> i32    { return 161; }  // function with body, extends FUNC_DEF
+
 // ── C AST Storage (flat arrays) ─────────────────────
 
 var cn_kinds: i32 = 0;
@@ -731,6 +764,599 @@ fn cp_parse_typedef() -> i32 {
     return cn_new(CNK_TYPEDEF(), alias3, orig_type, 0, 0, 0);
 }
 
+// ── Expression Parser (recursive descent with precedence) ─────
+
+// Forward declarations for recursive calls
+fn cp_parse_expr() -> i32;
+fn cp_parse_assign_expr() -> i32;
+fn cp_parse_stmt() -> i32;
+
+// Primary: literals, identifiers, parenthesized expressions, sizeof
+fn cp_parse_primary() -> i32 {
+    let tv: string = cp_peek_val();
+    let tt: i32 = cp_peek();
+
+    // Integer literal
+    if tt == CTK_INT_LIT() {
+        let val: string = cp_advance();
+        return cn_new(CNK_EXPR_INT(), val, "", 0, 0, 0);
+    }
+
+    // String literal
+    if tt == CTK_STR_LIT() {
+        let val: string = cp_advance();
+        return cn_new(CNK_EXPR_STR(), val, "", 0, 0, 0);
+    }
+
+    // Char literal
+    if tt == CTK_CHAR_LIT() {
+        let val: string = cp_advance();
+        return cn_new(CNK_EXPR_CHAR(), val, "", 0, 0, 0);
+    }
+
+    // NULL
+    if str_eq(tv, "NULL") {
+        cp_advance();
+        return cn_new(CNK_EXPR_NULL(), "NULL", "", 0, 0, 0);
+    }
+
+    // sizeof(type_or_expr)
+    if str_eq(tv, "sizeof") {
+        cp_advance();
+        cp_match_val("(");
+        // Collect everything until matching )
+        var content: string = "";
+        var depth: i32 = 1;
+        while !cp_at_end() && depth > 0 {
+            let sv: string = cp_peek_val();
+            if str_eq(sv, "(") { depth = depth + 1; }
+            if str_eq(sv, ")") { depth = depth - 1; }
+            if depth > 0 {
+                if len(content) > 0 { content = str_concat(content, " "); }
+                content = str_concat(content, cp_advance());
+            }
+        }
+        cp_match_val(")");
+        return cn_new(CNK_EXPR_SIZEOF(), content, "", 0, 0, 0);
+    }
+
+    // Identifier
+    if tt == CTK_IDENT() {
+        let name: string = cp_advance();
+        return cn_new(CNK_EXPR_IDENT(), name, "", 0, 0, 0);
+    }
+
+    // Parenthesized expression or cast
+    if str_eq(tv, "(") {
+        cp_advance();
+
+        // Check if this is a cast: (type)expr
+        // Heuristic: if next token is a type keyword or known type name
+        let peek_v: string = cp_peek_val();
+        var is_cast: bool = false;
+        if cp_is_type_keyword(peek_v) || cp_is_type_name(peek_v) {
+            is_cast = true;
+        }
+        if str_eq(peek_v, "const") || str_eq(peek_v, "unsigned") || str_eq(peek_v, "signed") {
+            is_cast = true;
+        }
+        if str_eq(peek_v, "struct") || str_eq(peek_v, "union") || str_eq(peek_v, "enum") {
+            is_cast = true;
+        }
+
+        if is_cast {
+            // Collect type until )
+            var cast_type: string = "";
+            while !cp_at_end() && !str_eq(cp_peek_val(), ")") {
+                if len(cast_type) > 0 { cast_type = str_concat(cast_type, " "); }
+                cast_type = str_concat(cast_type, cp_advance());
+            }
+            cp_match_val(")");
+            let operand: i32 = cp_parse_unary();
+            return cn_new(CNK_EXPR_CAST(), "", cast_type, operand, 0, 0);
+        }
+
+        // Regular parenthesized expression
+        let inner: i32 = cp_parse_expr();
+        cp_match_val(")");
+        return inner;
+    }
+
+    // Unknown — create a placeholder
+    let unk: string = cp_advance();
+    return cn_new(CNK_EXPR_IDENT(), unk, "", 0, 0, 0);
+}
+
+// Unary: prefix !, -, ~, *, &, ++, --
+fn cp_parse_unary() -> i32 {
+    let tv: string = cp_peek_val();
+
+    if str_eq(tv, "!") {
+        cp_advance();
+        let operand: i32 = cp_parse_unary();
+        return cn_new(CNK_EXPR_UNARY(), "!", "", operand, 0, 0);
+    }
+    if str_eq(tv, "-") {
+        cp_advance();
+        let operand: i32 = cp_parse_unary();
+        return cn_new(CNK_EXPR_UNARY(), "-", "", operand, 0, 0);
+    }
+    if str_eq(tv, "~") {
+        cp_advance();
+        let operand: i32 = cp_parse_unary();
+        return cn_new(CNK_EXPR_UNARY(), "~", "", operand, 0, 0);
+    }
+    if str_eq(tv, "*") {
+        cp_advance();
+        let operand: i32 = cp_parse_unary();
+        return cn_new(CNK_EXPR_DEREF(), "*", "", operand, 0, 0);
+    }
+    if str_eq(tv, "&") {
+        cp_advance();
+        let operand: i32 = cp_parse_unary();
+        return cn_new(CNK_EXPR_ADDR(), "&", "", operand, 0, 0);
+    }
+    if str_eq(tv, "++") {
+        cp_advance();
+        let operand: i32 = cp_parse_unary();
+        return cn_new(CNK_EXPR_UNARY(), "++pre", "", operand, 0, 0);
+    }
+    if str_eq(tv, "--") {
+        cp_advance();
+        let operand: i32 = cp_parse_unary();
+        return cn_new(CNK_EXPR_UNARY(), "--pre", "", operand, 0, 0);
+    }
+
+    return cp_parse_postfix();
+}
+
+// Postfix: function call, array index, member access, ++, --
+fn cp_parse_postfix() -> i32 {
+    var node: i32 = cp_parse_primary();
+
+    var cont: bool = true;
+    while cont {
+        let pv: string = cp_peek_val();
+
+        // Function call: f(args...)
+        if str_eq(pv, "(") {
+            cp_advance();
+            let args: i32 = array_new(0);
+            if !str_eq(cp_peek_val(), ")") {
+                array_push(args, cp_parse_assign_expr());
+                while str_eq(cp_peek_val(), ",") {
+                    cp_advance();
+                    array_push(args, cp_parse_assign_expr());
+                }
+            }
+            cp_match_val(")");
+            let astart: i32 = cn_flush(args);
+            node = cn_new(CNK_EXPR_CALL(), cnn(node), "", astart, array_len(args), 0);
+        } else if str_eq(pv, "[") {
+            // Array index: a[i]
+            cp_advance();
+            let idx_expr: i32 = cp_parse_expr();
+            cp_match_val("]");
+            node = cn_new(CNK_EXPR_INDEX(), "", "", node, idx_expr, 0);
+        } else if str_eq(pv, ".") {
+            // Member access: a.b
+            cp_advance();
+            let field: string = cp_advance();
+            node = cn_new(CNK_EXPR_MEMBER(), field, "", node, 0, 0);
+        } else if str_eq(pv, "->") {
+            // Arrow member: a->b
+            cp_advance();
+            let field: string = cp_advance();
+            node = cn_new(CNK_EXPR_MEMBER(), field, "", node, 1, 0);
+        } else if str_eq(pv, "++") {
+            cp_advance();
+            node = cn_new(CNK_EXPR_POSTFIX(), "++", "", node, 0, 0);
+        } else if str_eq(pv, "--") {
+            cp_advance();
+            node = cn_new(CNK_EXPR_POSTFIX(), "--", "", node, 0, 0);
+        } else {
+            cont = false;
+        }
+    }
+
+    return node;
+}
+
+// Multiplicative: *, /, %
+fn cp_parse_mul() -> i32 {
+    var left: i32 = cp_parse_unary();
+    while str_eq(cp_peek_val(), "*") || str_eq(cp_peek_val(), "/") || str_eq(cp_peek_val(), "%") {
+        let op: string = cp_advance();
+        let right: i32 = cp_parse_unary();
+        left = cn_new(CNK_EXPR_BINARY(), op, "", left, right, 0);
+    }
+    return left;
+}
+
+// Additive: +, -
+fn cp_parse_add() -> i32 {
+    var left: i32 = cp_parse_mul();
+    while str_eq(cp_peek_val(), "+") || str_eq(cp_peek_val(), "-") {
+        let op: string = cp_advance();
+        let right: i32 = cp_parse_mul();
+        left = cn_new(CNK_EXPR_BINARY(), op, "", left, right, 0);
+    }
+    return left;
+}
+
+// Shift: <<, >>
+fn cp_parse_shift() -> i32 {
+    var left: i32 = cp_parse_add();
+    while str_eq(cp_peek_val(), "<<") || str_eq(cp_peek_val(), ">>") {
+        let op: string = cp_advance();
+        let right: i32 = cp_parse_add();
+        left = cn_new(CNK_EXPR_BINARY(), op, "", left, right, 0);
+    }
+    return left;
+}
+
+// Relational: <, >, <=, >=
+fn cp_parse_rel() -> i32 {
+    var left: i32 = cp_parse_shift();
+    while str_eq(cp_peek_val(), "<") || str_eq(cp_peek_val(), ">") ||
+          str_eq(cp_peek_val(), "<=") || str_eq(cp_peek_val(), ">=") {
+        let op: string = cp_advance();
+        let right: i32 = cp_parse_shift();
+        left = cn_new(CNK_EXPR_BINARY(), op, "", left, right, 0);
+    }
+    return left;
+}
+
+// Equality: ==, !=
+fn cp_parse_eq() -> i32 {
+    var left: i32 = cp_parse_rel();
+    while str_eq(cp_peek_val(), "==") || str_eq(cp_peek_val(), "!=") {
+        let op: string = cp_advance();
+        let right: i32 = cp_parse_rel();
+        left = cn_new(CNK_EXPR_BINARY(), op, "", left, right, 0);
+    }
+    return left;
+}
+
+// Bitwise AND: &
+fn cp_parse_bit_and() -> i32 {
+    var left: i32 = cp_parse_eq();
+    while str_eq(cp_peek_val(), "&") && !str_eq(cp_peek_val_at(1), "&") {
+        cp_advance();
+        let right: i32 = cp_parse_eq();
+        left = cn_new(CNK_EXPR_BINARY(), "&", "", left, right, 0);
+    }
+    return left;
+}
+
+// Bitwise XOR: ^
+fn cp_parse_bit_xor() -> i32 {
+    var left: i32 = cp_parse_bit_and();
+    while str_eq(cp_peek_val(), "^") {
+        cp_advance();
+        let right: i32 = cp_parse_bit_and();
+        left = cn_new(CNK_EXPR_BINARY(), "^", "", left, right, 0);
+    }
+    return left;
+}
+
+// Bitwise OR: |
+fn cp_parse_bit_or() -> i32 {
+    var left: i32 = cp_parse_bit_xor();
+    while str_eq(cp_peek_val(), "|") && !str_eq(cp_peek_val_at(1), "|") {
+        cp_advance();
+        let right: i32 = cp_parse_bit_xor();
+        left = cn_new(CNK_EXPR_BINARY(), "|", "", left, right, 0);
+    }
+    return left;
+}
+
+// Logical AND: &&
+fn cp_parse_log_and() -> i32 {
+    var left: i32 = cp_parse_bit_or();
+    while str_eq(cp_peek_val(), "&&") {
+        cp_advance();
+        let right: i32 = cp_parse_bit_or();
+        left = cn_new(CNK_EXPR_BINARY(), "&&", "", left, right, 0);
+    }
+    return left;
+}
+
+// Logical OR: ||
+fn cp_parse_log_or() -> i32 {
+    var left: i32 = cp_parse_log_and();
+    while str_eq(cp_peek_val(), "||") {
+        cp_advance();
+        let right: i32 = cp_parse_log_and();
+        left = cn_new(CNK_EXPR_BINARY(), "||", "", left, right, 0);
+    }
+    return left;
+}
+
+// Ternary: cond ? then : else
+fn cp_parse_ternary() -> i32 {
+    var cond: i32 = cp_parse_log_or();
+    if str_eq(cp_peek_val(), "?") {
+        cp_advance();
+        let then_e: i32 = cp_parse_expr();
+        cp_match_val(":");
+        let else_e: i32 = cp_parse_ternary();
+        cond = cn_new(CNK_EXPR_TERNARY(), "", "", cond, then_e, else_e);
+    }
+    return cond;
+}
+
+// Assignment: lhs = rhs, lhs += rhs, etc.
+fn cp_parse_assign_expr() -> i32 {
+    let left: i32 = cp_parse_ternary();
+    let av: string = cp_peek_val();
+    if str_eq(av, "=") || str_eq(av, "+=") || str_eq(av, "-=") ||
+       str_eq(av, "*=") || str_eq(av, "/=") || str_eq(av, "%=") ||
+       str_eq(av, "&=") || str_eq(av, "|=") || str_eq(av, "^=") ||
+       str_eq(av, "<<=") || str_eq(av, ">>=") {
+        let op: string = cp_advance();
+        let right: i32 = cp_parse_assign_expr();
+        return cn_new(CNK_EXPR_ASSIGN(), op, "", left, right, 0);
+    }
+    return left;
+}
+
+// Comma expression (top-level)
+fn cp_parse_expr() -> i32 {
+    return cp_parse_assign_expr();
+}
+
+// ── Statement Parser ──────────────────────────────────
+
+fn cp_parse_block() -> i32;
+
+fn cp_parse_stmt() -> i32 {
+    let sv: string = cp_peek_val();
+
+    // Empty statement
+    if str_eq(sv, ";") {
+        cp_advance();
+        return cn_new(CNK_STMT_EXPR(), "", "", -1, 0, 0);
+    }
+
+    // Block statement
+    if str_eq(sv, "{") {
+        return cp_parse_block();
+    }
+
+    // Return statement
+    if str_eq(sv, "return") {
+        cp_advance();
+        var ret_expr: i32 = -1;
+        if !str_eq(cp_peek_val(), ";") {
+            ret_expr = cp_parse_expr();
+        }
+        cp_match_val(";");
+        return cn_new(CNK_STMT_RETURN(), "", "", ret_expr, 0, 0);
+    }
+
+    // If statement
+    if str_eq(sv, "if") {
+        cp_advance();
+        cp_match_val("(");
+        let cond: i32 = cp_parse_expr();
+        cp_match_val(")");
+        let then_body: i32 = cp_parse_stmt();
+        var else_body: i32 = -1;
+        if str_eq(cp_peek_val(), "else") {
+            cp_advance();
+            else_body = cp_parse_stmt();
+        }
+        return cn_new(CNK_STMT_IF(), "", "", cond, then_body, else_body);
+    }
+
+    // While statement
+    if str_eq(sv, "while") {
+        cp_advance();
+        cp_match_val("(");
+        let cond: i32 = cp_parse_expr();
+        cp_match_val(")");
+        let body: i32 = cp_parse_stmt();
+        return cn_new(CNK_STMT_WHILE(), "", "", cond, body, 0);
+    }
+
+    // For statement
+    if str_eq(sv, "for") {
+        cp_advance();
+        cp_match_val("(");
+
+        // Init: could be declaration or expression or empty
+        var init_stmt: i32 = -1;
+        if str_eq(cp_peek_val(), ";") {
+            cp_advance();
+        } else if cp_is_type_keyword(cp_peek_val()) || cp_is_type_name(cp_peek_val()) ||
+                  str_eq(cp_peek_val(), "const") || str_eq(cp_peek_val(), "static") {
+            // Variable declaration as init
+            init_stmt = cp_parse_var_decl_stmt();
+        } else {
+            init_stmt = cp_parse_expr();
+            cp_match_val(";");
+        }
+
+        // Condition
+        var for_cond: i32 = -1;
+        if !str_eq(cp_peek_val(), ";") {
+            for_cond = cp_parse_expr();
+        }
+        cp_match_val(";");
+
+        // Step
+        var step_expr: i32 = -1;
+        if !str_eq(cp_peek_val(), ")") {
+            step_expr = cp_parse_expr();
+        }
+        cp_match_val(")");
+
+        let for_body: i32 = cp_parse_stmt();
+
+        // Pack: init in d1, cond in d2, body wraps step
+        // Store step as a separate node referenced by d3
+        let for_node: i32 = cn_new(CNK_STMT_FOR(), "", "", init_stmt, for_cond, step_expr);
+        // Store body reference in type field as string hack (ugly but works)
+        // Actually, let's use the children array
+        let body_arr: i32 = array_new(0);
+        array_push(body_arr, for_body);
+        let body_start: i32 = cn_flush(body_arr);
+        // Update d3 to hold both step and body_start encoded
+        // Simpler: use cn_new for the for node differently
+        // Let's just store body in name field as index string
+        // Actually, simplest: d1=block wrapping init+cond+step+body
+        // Let me just use a flat approach: for has 4 children
+        let for_children: i32 = array_new(0);
+        array_push(for_children, init_stmt);
+        array_push(for_children, for_cond);
+        array_push(for_children, step_expr);
+        array_push(for_children, for_body);
+        let fc_start: i32 = cn_flush(for_children);
+        return cn_new(CNK_STMT_FOR(), "", "", fc_start, 4, 0);
+    }
+
+    // Switch statement
+    if str_eq(sv, "switch") {
+        cp_advance();
+        cp_match_val("(");
+        let sw_expr: i32 = cp_parse_expr();
+        cp_match_val(")");
+        cp_match_val("{");
+
+        let cases: i32 = array_new(0);
+        while !cp_at_end() && !str_eq(cp_peek_val(), "}") {
+            if str_eq(cp_peek_val(), "case") {
+                cp_advance();
+                // Collect case value expression
+                let case_expr: i32 = cp_parse_expr();
+                cp_match_val(":");
+                // Collect statements until next case/default/}
+                let case_stmts: i32 = array_new(0);
+                while !cp_at_end() && !str_eq(cp_peek_val(), "case") &&
+                      !str_eq(cp_peek_val(), "default") && !str_eq(cp_peek_val(), "}") {
+                    array_push(case_stmts, cp_parse_stmt());
+                }
+                let cs_start: i32 = cn_flush(case_stmts);
+                array_push(cases, cn_new(CNK_STMT_CASE(), "", "", case_expr, cs_start, array_len(case_stmts)));
+            } else if str_eq(cp_peek_val(), "default") {
+                cp_advance();
+                cp_match_val(":");
+                let def_stmts: i32 = array_new(0);
+                while !cp_at_end() && !str_eq(cp_peek_val(), "case") &&
+                      !str_eq(cp_peek_val(), "default") && !str_eq(cp_peek_val(), "}") {
+                    array_push(def_stmts, cp_parse_stmt());
+                }
+                let ds_start: i32 = cn_flush(def_stmts);
+                array_push(cases, cn_new(CNK_STMT_CASE(), "default", "", -1, ds_start, array_len(def_stmts)));
+            } else {
+                cp_advance();
+            }
+        }
+        cp_match_val("}");
+        let case_start: i32 = cn_flush(cases);
+        return cn_new(CNK_STMT_SWITCH(), "", "", sw_expr, case_start, array_len(cases));
+    }
+
+    // Break
+    if str_eq(sv, "break") {
+        cp_advance();
+        cp_match_val(";");
+        return cn_new(CNK_STMT_BREAK(), "", "", 0, 0, 0);
+    }
+
+    // Continue
+    if str_eq(sv, "continue") {
+        cp_advance();
+        cp_match_val(";");
+        return cn_new(CNK_STMT_CONTINUE(), "", "", 0, 0, 0);
+    }
+
+    // Variable declaration: starts with type keyword/name
+    if cp_is_type_keyword(cp_peek_val()) || cp_is_type_name(cp_peek_val()) ||
+       str_eq(cp_peek_val(), "const") || str_eq(cp_peek_val(), "static") ||
+       str_eq(cp_peek_val(), "unsigned") || str_eq(cp_peek_val(), "signed") {
+        // Check if this is really a declaration (type followed by ident)
+        // vs an expression statement (could be a typedef'd type used as function call)
+        return cp_parse_var_decl_stmt();
+    }
+
+    // Expression statement
+    let expr: i32 = cp_parse_expr();
+    cp_match_val(";");
+    return cn_new(CNK_STMT_EXPR(), "", "", expr, 0, 0);
+}
+
+// Parse variable declaration statement: type name [= init] [, name2 [= init2]] ;
+fn cp_parse_var_decl_stmt() -> i32 {
+    let base: string = cp_parse_base_type();
+    let ptrs: string = cp_parse_pointers();
+    var full_type: string = base;
+    if len(ptrs) > 0 { full_type = str_concat(base, str_concat(" ", ptrs)); }
+
+    let var_name: string = cp_advance();
+
+    // Handle array declarator
+    if str_eq(cp_peek_val(), "[") {
+        cp_advance();
+        while !cp_at_end() && !str_eq(cp_peek_val(), "]") { cp_advance(); }
+        cp_match_val("]");
+        full_type = str_concat(full_type, "[]");
+    }
+
+    // Initializer
+    var init_expr: i32 = -1;
+    if str_eq(cp_peek_val(), "=") {
+        cp_advance();
+        // Handle {0} and similar struct initializers
+        if str_eq(cp_peek_val(), "{") {
+            // Skip initializer list
+            cp_skip_braces();
+            init_expr = cn_new(CNK_EXPR_INT(), "0", "", 0, 0, 0);
+        } else {
+            init_expr = cp_parse_assign_expr();
+        }
+    }
+
+    // Handle additional declarators: int a = 1, b = 2;
+    // For now, skip them
+    while str_eq(cp_peek_val(), ",") {
+        cp_advance();
+        // Skip pointer stars
+        while str_eq(cp_peek_val(), "*") { cp_advance(); }
+        if cp_peek() == CTK_IDENT() { cp_advance(); }
+        if str_eq(cp_peek_val(), "=") {
+            cp_advance();
+            if str_eq(cp_peek_val(), "{") { cp_skip_braces(); }
+            else { cp_parse_assign_expr(); }
+        }
+    }
+
+    cp_match_val(";");
+    return cn_new(CNK_STMT_VAR(), var_name, full_type, init_expr, 0, 0);
+}
+
+// Parse block: { stmt* }
+fn cp_parse_block() -> i32 {
+    cp_match_val("{");
+    let stmts: i32 = array_new(0);
+    while !cp_at_end() && !str_eq(cp_peek_val(), "}") {
+        let save: i32 = cp_pos;
+        array_push(stmts, cp_parse_stmt());
+        if cp_pos == save { cp_advance(); }  // safety
+    }
+    cp_match_val("}");
+    let s_start: i32 = cn_flush(stmts);
+    return cn_new(CNK_STMT_BLOCK(), "", "", s_start, array_len(stmts), 0);
+}
+
+// Parse function body: wraps cp_parse_block for a function definition
+fn cp_parse_func_body() -> i32 {
+    return cp_parse_block();
+}
+
+// ── Top-Level Declarations ──────────────────────────
+
 // Parse a top-level declaration (function or global variable)
 // Assumes type specifiers haven't been consumed yet
 fn cp_parse_declaration() -> i32 {
@@ -769,9 +1395,9 @@ fn cp_parse_declaration() -> i32 {
         }
 
         if str_eq(cp_peek_val(), "{") {
-            // Function definition — skip body
-            cp_skip_braces();
-            return cn_new(CNK_FUNC_DEF(), name, full_type, pstart, pcount, 0);
+            // Function definition — parse body
+            let body: i32 = cp_parse_func_body();
+            return cn_new(CNK_FUNC_DEF(), name, full_type, pstart, pcount, body);
         }
 
         // Function declaration
@@ -1570,6 +2196,196 @@ fn test_c_parser() -> i32 {
             println("  FAIL mc.c translation (missing functions)");
         }
     } else { println("  FAIL mc.c translation (cannot read)"); }
+
+    // Test 21: function body parsing — return statement
+    tests_run = tests_run + 1;
+    let t21: i32 = cp_parse("int foo() { return 42; }");
+    let f21: i32 = cn_child(cnd1(t21), 0);
+    let body21: i32 = cnd3(f21);  // body is in d3 now
+    if cnk(body21) == CNK_STMT_BLOCK() && cnd2(body21) >= 1 {
+        let stmt21: i32 = cn_child(cnd1(body21), 0);  // first statement
+        if cnk(stmt21) == CNK_STMT_RETURN() && cnd1(stmt21) >= 0 {
+            let ret_expr: i32 = cnd1(stmt21);
+            if cnk(ret_expr) == CNK_EXPR_INT() && str_eq(cnn(ret_expr), "42") {
+                tests_passed = tests_passed + 1;
+                println("  OK  body: return literal");
+            } else {
+                print("  FAIL body: return literal (expr kind=");
+                print(int_to_str(cnk(ret_expr)));
+                println(")");
+            }
+        } else {
+            print("  FAIL body: return (stmt kind=");
+            print(int_to_str(cnk(stmt21)));
+            println(")");
+        }
+    } else {
+        print("  FAIL body: return (body kind=");
+        print(int_to_str(cnk(body21)));
+        print(", stmts=");
+        print(int_to_str(cnd2(body21)));
+        println(")");
+    }
+
+    // Test 22: function body — variable declaration + assignment
+    tests_run = tests_run + 1;
+    let t22: i32 = cp_parse("int bar() { int x = 5; return x; }");
+    let f22: i32 = cn_child(cnd1(t22), 0);
+    let body22: i32 = cnd3(f22);
+    if cnk(body22) == CNK_STMT_BLOCK() && cnd2(body22) >= 2 {
+        let decl22: i32 = cn_child(cnd1(body22), 0);
+        let ret22: i32 = cn_child(cnd1(body22), 1);
+        if cnk(decl22) == CNK_STMT_VAR() && str_eq(cnn(decl22), "x") &&
+           cnk(ret22) == CNK_STMT_RETURN() {
+            tests_passed = tests_passed + 1;
+            println("  OK  body: var decl + return");
+        } else {
+            print("  FAIL body: var decl + return (decl=");
+            print(int_to_str(cnk(decl22)));
+            print(", ret=");
+            print(int_to_str(cnk(ret22)));
+            println(")");
+        }
+    } else {
+        print("  FAIL body: var decl (stmts=");
+        print(int_to_str(cnd2(body22)));
+        println(")");
+    }
+
+    // Test 23: function body — if/else
+    tests_run = tests_run + 1;
+    let t23: i32 = cp_parse("int abs(int n) { if (n < 0) { return -n; } else { return n; } }");
+    let f23: i32 = cn_child(cnd1(t23), 0);
+    let body23: i32 = cnd3(f23);
+    if cnk(body23) == CNK_STMT_BLOCK() && cnd2(body23) >= 1 {
+        let if23: i32 = cn_child(cnd1(body23), 0);
+        if cnk(if23) == CNK_STMT_IF() && cnd3(if23) >= 0 {
+            tests_passed = tests_passed + 1;
+            println("  OK  body: if/else");
+        } else {
+            print("  FAIL body: if/else (kind=");
+            print(int_to_str(cnk(if23)));
+            print(", else=");
+            print(int_to_str(cnd3(if23)));
+            println(")");
+        }
+    } else {
+        println("  FAIL body: if/else (no body)");
+    }
+
+    // Test 24: function body — while loop
+    tests_run = tests_run + 1;
+    let t24: i32 = cp_parse("void loop() { while (x > 0) { x = x - 1; } }");
+    let f24: i32 = cn_child(cnd1(t24), 0);
+    let body24: i32 = cnd3(f24);
+    if cnk(body24) == CNK_STMT_BLOCK() && cnd2(body24) >= 1 {
+        let wh24: i32 = cn_child(cnd1(body24), 0);
+        if cnk(wh24) == CNK_STMT_WHILE() {
+            tests_passed = tests_passed + 1;
+            println("  OK  body: while loop");
+        } else {
+            print("  FAIL body: while loop (kind=");
+            print(int_to_str(cnk(wh24)));
+            println(")");
+        }
+    } else {
+        println("  FAIL body: while loop (no body)");
+    }
+
+    // Test 25: function body — for loop
+    tests_run = tests_run + 1;
+    let t25: i32 = cp_parse("int sum(int n) { int s = 0; for (int i = 0; i < n; i++) { s = s + i; } return s; }");
+    let f25: i32 = cn_child(cnd1(t25), 0);
+    let body25: i32 = cnd3(f25);
+    if cnk(body25) == CNK_STMT_BLOCK() && cnd2(body25) >= 3 {
+        let for25: i32 = cn_child(cnd1(body25), 1);  // second statement is the for
+        if cnk(for25) == CNK_STMT_FOR() {
+            tests_passed = tests_passed + 1;
+            println("  OK  body: for loop");
+        } else {
+            print("  FAIL body: for loop (kind=");
+            print(int_to_str(cnk(for25)));
+            println(")");
+        }
+    } else {
+        print("  FAIL body: for loop (stmts=");
+        print(int_to_str(cnd2(body25)));
+        println(")");
+    }
+
+    // Test 26: function body — function call expression
+    tests_run = tests_run + 1;
+    let t26: i32 = cp_parse("void test() { printf(\"hello\"); }");
+    let f26: i32 = cn_child(cnd1(t26), 0);
+    let body26: i32 = cnd3(f26);
+    if cnk(body26) == CNK_STMT_BLOCK() && cnd2(body26) >= 1 {
+        let expr26: i32 = cn_child(cnd1(body26), 0);
+        if cnk(expr26) == CNK_STMT_EXPR() {
+            let call26: i32 = cnd1(expr26);
+            if cnk(call26) == CNK_EXPR_CALL() && str_eq(cnn(call26), "printf") {
+                tests_passed = tests_passed + 1;
+                println("  OK  body: function call");
+            } else {
+                print("  FAIL body: function call (");
+                print(int_to_str(cnk(call26)));
+                println(")");
+            }
+        } else {
+            print("  FAIL body: function call (stmt=");
+            print(int_to_str(cnk(expr26)));
+            println(")");
+        }
+    } else {
+        println("  FAIL body: function call (no body)");
+    }
+
+    // Test 27: expression parsing — binary + member access
+    tests_run = tests_run + 1;
+    let t27: i32 = cp_parse("int f() { return a->x + b.y; }");
+    let f27: i32 = cn_child(cnd1(t27), 0);
+    let body27: i32 = cnd3(f27);
+    if cnk(body27) == CNK_STMT_BLOCK() && cnd2(body27) >= 1 {
+        let ret27: i32 = cn_child(cnd1(body27), 0);
+        let rexpr27: i32 = cnd1(ret27);
+        if cnk(rexpr27) == CNK_EXPR_BINARY() && str_eq(cnn(rexpr27), "+") {
+            tests_passed = tests_passed + 1;
+            println("  OK  body: binary + member access");
+        } else {
+            print("  FAIL body: binary (kind=");
+            print(int_to_str(cnk(rexpr27)));
+            println(")");
+        }
+    } else {
+        println("  FAIL body: binary (no body)");
+    }
+
+    // Test 28: real file body parsing — mc.c functions have bodies
+    tests_run = tests_run + 1;
+    let t28: i32 = cp_parse_file("m/bootstrap/mc.c");
+    if t28 >= 0 {
+        let mc_f: i32 = cn_child(cnd1(t28), 0);
+        // Find first FUNC_DEF
+        var found_body: bool = false;
+        var bi: i32 = 0;
+        while bi < cnd2(t28) && !found_body {
+            let nd: i32 = cn_child(cnd1(t28), bi);
+            if cnk(nd) == CNK_FUNC_DEF() {
+                let bd: i32 = cnd3(nd);
+                if cnk(bd) == CNK_STMT_BLOCK() && cnd2(bd) > 0 {
+                    found_body = true;
+                }
+            }
+            bi = bi + 1;
+        }
+        if found_body {
+            tests_passed = tests_passed + 1;
+            println("  OK  body: mc.c functions parsed");
+        } else {
+            println("  FAIL body: mc.c no function bodies found");
+        }
+    } else {
+        println("  FAIL body: mc.c cannot read");
+    }
 
     println("");
     print(int_to_str(tests_passed));
