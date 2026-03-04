@@ -14,10 +14,16 @@
 //   rollback                  -restore to last snapshot
 //   drift                     -show which values have changed over time
 //   env                       -show all current bindings
+//   analyze <file.m>          -analyze M source file (Phase C)
+//   funcs                     -list functions from analysis
+//   calls <name>              -show what a function calls
+//   callers <name>            -show who calls a function
+//   stats                     -show code metrics
 //   help                      -show command reference
 //   quit / exit               -exit the shell
 
 use "machine_vm.m"
+use "machine_analyze.m"
 
 // ── String helpers ───────────────────────────────────
 
@@ -135,6 +141,13 @@ fn show_help() {
     println("    x * 2 + 1          -> uses bound variables");
     println("    (10 + x) * 3       -> parentheses work");
     println("    x > 5 && x < 100   -> comparisons + logic");
+    println("");
+    println("  Code analysis:");
+    println("    analyze <file.m>       Analyze M source file");
+    println("    funcs                  List functions from analysis");
+    println("    calls <name>           Show what a function calls");
+    println("    callers <name>         Show who calls a function");
+    println("    stats                  Show code metrics");
     println("");
     println("  Values: integers (42), strings (\"hello\"), booleans (true/false)");
     println("  Approximate: bind x ~ 100  (value with uncertainty)");
@@ -438,6 +451,255 @@ fn try_auto_restore() {
         print("  (restored ");
         print(int_to_str(env_get_count()));
         println(" bindings from previous session)");
+    }
+}
+
+// ── Code analysis commands ───────────────────────────
+
+fn cmd_analyze(args: string) {
+    let path: string = str_trim(args);
+    if len(path) == 0 {
+        println("  Error: use 'analyze <file.m>'");
+        return;
+    }
+
+    let result: i32 = analyze_file(path);
+    if result < 0 {
+        print("  Error: could not read '");
+        print(path);
+        println("'");
+        return;
+    }
+
+    // Populate VM with analysis bindings
+    ana_populate_vm();
+
+    // Show summary
+    println("");
+    print("  Analyzed: ");
+    println(path);
+    print("  Lines: ");
+    println(int_to_str(ana_get_lines()));
+    print("  Functions: ");
+    println(int_to_str(ana_get_func_count()));
+    print("  Globals: ");
+    println(int_to_str(ana_get_global_count()));
+    if ana_get_use_count() > 0 {
+        print("  Dependencies: ");
+        println(int_to_str(ana_get_use_count()));
+    }
+    print("  Avg function size: ");
+    print(int_to_str(ana_avg_func_lines()));
+    println(" lines");
+    print("  Largest function: ");
+    print(ana_max_func_name());
+    print(" (");
+    print(int_to_str(ana_max_func_lines()));
+    println(" lines)");
+    println("");
+    println("  Use 'funcs' to list functions, 'calls <name>' for call graph.");
+    println("  Analysis bound to VM -- use 'load _funcs' or 'load fn.<name>.lines'.");
+}
+
+fn cmd_funcs() {
+    if ana_get_func_count() == 0 {
+        println("  No analysis loaded. Use 'analyze <file.m>' first.");
+        return;
+    }
+
+    print("  Functions in ");
+    print(ana_get_file());
+    print(" (");
+    print(int_to_str(ana_get_func_count()));
+    println("):");
+
+    var i: i32 = 0;
+    while i < ana_get_func_count() {
+        print("    ");
+        print(ana_func_name(i));
+        print("(");
+        let pc: i32 = ana_func_params(i);
+        if pc > 0 {
+            print(int_to_str(pc));
+            print(" params");
+        }
+        print(")  ");
+        print(int_to_str(ana_func_lines(i)));
+        print("L  ");
+        let cc: i32 = ana_func_call_count(i);
+        if cc > 0 {
+            print(int_to_str(cc));
+            print(" calls");
+        }
+        println("");
+        i = i + 1;
+    }
+}
+
+fn cmd_calls(args: string) {
+    let name: string = str_trim(args);
+    if len(name) == 0 {
+        println("  Error: use 'calls <function_name>'");
+        return;
+    }
+
+    let idx: i32 = ana_find_func(name);
+    if idx < 0 {
+        print("  Function '");
+        print(name);
+        println("' not found in analysis.");
+        return;
+    }
+
+    print("  ");
+    print(name);
+    print(" (lines ");
+    print(int_to_str(ana_func_start(idx)));
+    print("-");
+    print(int_to_str(ana_func_end(idx)));
+    print(", ");
+    print(int_to_str(ana_func_params(idx)));
+    println(" params)");
+
+    let cc: i32 = ana_func_call_count(idx);
+    if cc == 0 {
+        println("    (no calls)");
+        return;
+    }
+
+    print("    calls (");
+    print(int_to_str(cc));
+    println("):");
+    var i: i32 = 0;
+    while i < cc {
+        let call_name: string = ana_func_call_name(idx, i);
+        print("      -> ");
+        print(call_name);
+        // Check if target is in same file
+        let target: i32 = ana_find_func(call_name);
+        if target >= 0 {
+            print("  (line ");
+            print(int_to_str(ana_func_start(target)));
+            print(")");
+        } else {
+            print("  (external)");
+        }
+        println("");
+        i = i + 1;
+    }
+}
+
+fn cmd_callers(args: string) {
+    let name: string = str_trim(args);
+    if len(name) == 0 {
+        println("  Error: use 'callers <function_name>'");
+        return;
+    }
+
+    if ana_get_func_count() == 0 {
+        println("  No analysis loaded. Use 'analyze <file.m>' first.");
+        return;
+    }
+
+    // Search all functions for calls to this name
+    var found: i32 = 0;
+    print("  Who calls ");
+    print(name);
+    println(":");
+
+    var i: i32 = 0;
+    while i < ana_get_func_count() {
+        var j: i32 = 0;
+        let cc: i32 = ana_func_call_count(i);
+        while j < cc {
+            if str_eq(ana_func_call_name(i, j), name) {
+                print("    <- ");
+                print(ana_func_name(i));
+                print("  (line ");
+                print(int_to_str(ana_func_start(i)));
+                println(")");
+                found = found + 1;
+            }
+            j = j + 1;
+        }
+        i = i + 1;
+    }
+
+    if found == 0 {
+        println("    (no callers found in this file)");
+    } else {
+        print("  ");
+        print(int_to_str(found));
+        println(" callers");
+    }
+}
+
+fn cmd_stats() {
+    if ana_get_func_count() == 0 {
+        println("  No analysis loaded. Use 'analyze <file.m>' first.");
+        return;
+    }
+
+    println("  Code metrics:");
+    print("    Total lines: ");
+    println(int_to_str(ana_get_lines()));
+    print("    Functions: ");
+    println(int_to_str(ana_get_func_count()));
+    print("    Globals: ");
+    println(int_to_str(ana_get_global_count()));
+    print("    Avg function size: ");
+    print(int_to_str(ana_avg_func_lines()));
+    println(" lines");
+    print("    Largest: ");
+    print(ana_max_func_name());
+    print(" (");
+    print(int_to_str(ana_max_func_lines()));
+    println(" lines)");
+
+    // Count functions by size category
+    var small: i32 = 0;   // 1-5 lines
+    var medium: i32 = 0;  // 6-20 lines
+    var large: i32 = 0;   // 21-50 lines
+    var huge: i32 = 0;    // 50+ lines
+    var i: i32 = 0;
+    while i < ana_get_func_count() {
+        let l: i32 = ana_func_lines(i);
+        if l <= 5 { small = small + 1; }
+        else if l <= 20 { medium = medium + 1; }
+        else if l <= 50 { large = large + 1; }
+        else { huge = huge + 1; }
+        i = i + 1;
+    }
+    println("    Size distribution:");
+    print("      small (1-5):    ");
+    println(int_to_str(small));
+    print("      medium (6-20):  ");
+    println(int_to_str(medium));
+    print("      large (21-50):  ");
+    println(int_to_str(large));
+    print("      huge (50+):     ");
+    println(int_to_str(huge));
+
+    // Find most-called functions (callers count)
+    // Build reverse call index
+    println("    Most connected:");
+    var max_calls: i32 = 0;
+    var max_calls_name: string = "";
+    i = 0;
+    while i < ana_get_func_count() {
+        let cc: i32 = ana_func_call_count(i);
+        if cc > max_calls {
+            max_calls = cc;
+            max_calls_name = ana_func_name(i);
+        }
+        i = i + 1;
+    }
+    if max_calls > 0 {
+        print("      ");
+        print(max_calls_name);
+        print(" calls ");
+        print(int_to_str(max_calls));
+        println(" other functions");
     }
 }
 
@@ -788,6 +1050,16 @@ fn main() -> i32 {
         } else if str_eq(line, "restore") || str_starts_with(line, "restore ") {
             if len(line) > 8 { cmd_restore(substr(line, 8, len(line) - 8)); }
             else { cmd_restore(""); }
+        } else if str_starts_with(line, "analyze ") {
+            cmd_analyze(substr(line, 8, len(line) - 8));
+        } else if str_eq(line, "funcs") {
+            cmd_funcs();
+        } else if str_starts_with(line, "calls ") {
+            cmd_calls(substr(line, 6, len(line) - 6));
+        } else if str_starts_with(line, "callers ") {
+            cmd_callers(substr(line, 8, len(line) - 8));
+        } else if str_eq(line, "stats") {
+            cmd_stats();
         } else if str_starts_with(line, "bind ") {
             cmd_bind(substr(line, 5, len(line) - 5));
         } else if str_starts_with(line, "load ") {
