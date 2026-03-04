@@ -178,6 +178,7 @@ fn show_help() {
     println("    unused                 Find functions with no callers");
     println("    hotspots [N]           Show N most-called functions");
     println("    health                 Code health report with score");
+    println("    audit                  Comprehensive code quality audit");
     println("    map                    Dependency map (architecture overview)");
     println("    explain <name>         Machine explains what a function does");
     println("    summary                Narrative summary of analyzed code");
@@ -1697,6 +1698,159 @@ fn cmd_summary() {
     println("");
 }
 
+fn cmd_audit() {
+    if ana_get_func_count() == 0 {
+        println("  No analysis loaded. Use 'analyze <file.m>' first.");
+        return;
+    }
+
+    let nfuncs: i32 = ana_get_func_count();
+    let nlines: i32 = ana_get_lines();
+
+    println("");
+    println("  ┌─────────────────────────────────────────────┐");
+    println("  │              Code Audit Report               │");
+    println("  └─────────────────────────────────────────────┘");
+    print("  File: ");
+    println(ana_get_file());
+    print("  Functions: ");
+    print(int_to_str(nfuncs));
+    print("  Lines: ");
+    print(int_to_str(nlines));
+    print("  Globals: ");
+    println(int_to_str(ana_get_global_count()));
+    println("");
+
+    // 1. Health Score
+    let score: i32 = ana_health_score();
+    let conf: i32 = ana_health_conf();
+    print("  1. HEALTH: ~");
+    print(int_to_str(score));
+    print("/100 (conf:");
+    print(int_to_str(conf));
+    print("%) ");
+    if score >= 80 { println("[PASS]"); }
+    else if score >= 50 { println("[WARN]"); }
+    else { println("[FAIL]"); }
+
+    // 2. Size Balance
+    var huge_count: i32 = 0;
+    var huge_total_lines: i32 = 0;
+    var i: i32 = 0;
+    while i < nfuncs {
+        if ana_func_lines(i) > 50 {
+            huge_count = huge_count + 1;
+            huge_total_lines = huge_total_lines + ana_func_lines(i);
+        }
+        i = i + 1;
+    }
+    print("  2. SIZE BALANCE: ");
+    if huge_count == 0 { println("no large functions [PASS]"); }
+    else {
+        print(int_to_str(huge_count));
+        print(" large functions (");
+        print(int_to_str(huge_total_lines));
+        print(" lines, ");
+        print(int_to_str(huge_total_lines * 100 / nlines));
+        println("% of code) [WARN]");
+    }
+
+    // 3. Dead Code
+    let dead: i32 = ana_dead_code();
+    let ndead: i32 = array_len(dead);
+    print("  3. DEAD CODE: ");
+    if ndead == 0 { println("none detected [PASS]"); }
+    else {
+        print(int_to_str(ndead));
+        print(" functions (");
+        print(int_to_str(ndead * 100 / nfuncs));
+        println("%) [WARN]");
+    }
+
+    // 4. Coupling
+    let pairs: i32 = ana_coupled_pairs(3);
+    let npairs: i32 = array_len(pairs) / 3;
+    var mutual_deps: i32 = 0;
+    i = 0;
+    while i < npairs {
+        if array_get(pairs, i * 3 + 2) >= 2 {
+            mutual_deps = mutual_deps + 1;
+        }
+        i = i + 1;
+    }
+    print("  4. COUPLING: ");
+    if mutual_deps == 0 { println("no mutual dependencies [PASS]"); }
+    else {
+        print(int_to_str(mutual_deps));
+        println(" mutual dependency pair(s) [WARN]");
+    }
+
+    // 5. Hotspots
+    var critical_hotspots: i32 = 0;
+    i = 0;
+    while i < nfuncs {
+        let cc: i32 = ana_caller_count(ana_func_name(i));
+        if cc > nfuncs / 3 { critical_hotspots = critical_hotspots + 1; }
+        i = i + 1;
+    }
+    print("  5. HOTSPOTS: ");
+    if critical_hotspots == 0 { println("no critical hotspots [PASS]"); }
+    else {
+        print(int_to_str(critical_hotspots));
+        println(" function(s) called by >33% of codebase [WARN]");
+    }
+
+    // 6. Architecture balance
+    var n_const: i32 = 0;
+    var n_util: i32 = 0;
+    var n_core: i32 = 0;
+    var n_iface: i32 = 0;
+    i = 0;
+    while i < nfuncs {
+        let role: i32 = ana_func_role(i);
+        if role == 1 { n_const = n_const + 1; }
+        else if role == 2 { n_util = n_util + 1; }
+        else if role == 3 { n_core = n_core + 1; }
+        else if role == 4 { n_iface = n_iface + 1; }
+        i = i + 1;
+    }
+    print("  6. ARCHITECTURE: ");
+    // Good architecture: many utilities, few core, some interfaces
+    if n_core <= nfuncs / 5 { println("well-layered [PASS]"); }
+    else {
+        print(int_to_str(n_core * 100 / nfuncs));
+        println("% core — consider extracting utilities [WARN]");
+    }
+
+    // Overall verdict
+    println("");
+    var warnings: i32 = 0;
+    if score < 80 { warnings = warnings + 1; }
+    if huge_count > 0 { warnings = warnings + 1; }
+    if ndead > nfuncs / 5 { warnings = warnings + 1; }
+    if mutual_deps > 0 { warnings = warnings + 1; }
+    if critical_hotspots > 0 { warnings = warnings + 1; }
+    if n_core > nfuncs / 5 { warnings = warnings + 1; }
+
+    print("  VERDICT: ");
+    if warnings == 0 { println("CLEAN — no issues detected"); }
+    else if warnings <= 2 { println("GOOD — minor issues, low risk"); }
+    else if warnings <= 4 { println("FAIR — some concerns, review recommended"); }
+    else { println("ATTENTION — multiple issues, refactoring recommended"); }
+
+    // Suggestions count
+    let nsug: i32 = ana_suggest();
+    print("  ");
+    print(int_to_str(nsug));
+    println(" improvement suggestions available (use 'suggest' for details)");
+
+    // Populate VM
+    ana_populate_intelligence();
+    ana_populate_suggestions();
+    println("  Results bound to VM.");
+    println("");
+}
+
 fn cmd_map() {
     if ana_get_func_count() == 0 {
         println("  No analysis loaded. Use 'analyze <file.m>' first.");
@@ -2754,6 +2908,8 @@ fn main() -> i32 {
             else { cmd_hotspots(""); }
         } else if str_eq(line, "health") {
             cmd_health();
+        } else if str_eq(line, "audit") {
+            cmd_audit();
         } else if str_eq(line, "map") {
             cmd_map();
         } else if str_starts_with(line, "explain ") {
