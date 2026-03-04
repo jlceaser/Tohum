@@ -1,0 +1,2 @@
+# M language — not Objective-C, not MATLAB, not C.
+*.m linguist-language=M linguist-detectable

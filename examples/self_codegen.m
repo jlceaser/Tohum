@@ -1882,13 +1882,108 @@ fn run_file_test(path: string, expected_ret: i32, expected_out: string, label: s
     return ok;
 }
 
+// ── use directive preprocessor ─────────────────────
+// Resolves use "path"; directives by inlining file contents.
+// Prevents double inclusion. Processes top-of-file directives only.
+
+var use_included: i32 = 0;
+
+fn init_use_system() -> i32 {
+    use_included = array_new(0);
+    return 0;
+}
+
+fn use_already_included(path: string) -> i32 {
+    var i: i32 = 0;
+    while i < array_len(use_included) {
+        if str_eq(array_get(use_included, i), path) { return 1; }
+        i = i + 1;
+    }
+    return 0;
+}
+
+fn get_dir(path: string) -> string {
+    var last_sep: i32 = 0 - 1;
+    var i: i32 = 0;
+    while i < len(path) {
+        let c: i32 = char_at(path, i);
+        if c == 47 || c == 92 { last_sep = i; }
+        i = i + 1;
+    }
+    if last_sep >= 0 { return substr(path, 0, last_sep + 1); }
+    return "";
+}
+
+fn resolve_uses(src: string, base_dir: string) -> string {
+    var result: string = "";
+    var pos: i32 = 0;
+
+    while pos < len(src) {
+        // Skip blank lines and whitespace at line start
+        let line_start: i32 = pos;
+        while pos < len(src) && (char_at(src, pos) == 32 || char_at(src, pos) == 9) {
+            pos = pos + 1;
+        }
+
+        // Check for "use " (4 chars: u=117, s=115, e=101, space=32)
+        if pos + 4 <= len(src) && str_eq(substr(src, pos, 4), "use ") {
+            pos = pos + 4;
+            while pos < len(src) && char_at(src, pos) == 32 { pos = pos + 1; }
+            if pos < len(src) && char_at(src, pos) == 34 {
+                pos = pos + 1;
+                let path_start: i32 = pos;
+                while pos < len(src) && char_at(src, pos) != 34 { pos = pos + 1; }
+                if pos < len(src) {
+                    let path: string = substr(src, path_start, pos - path_start);
+                    pos = pos + 1;
+                    while pos < len(src) && (char_at(src, pos) == 32 || char_at(src, pos) == 9) { pos = pos + 1; }
+                    if pos < len(src) && char_at(src, pos) == 59 { pos = pos + 1; }
+                    if pos < len(src) && char_at(src, pos) == 13 { pos = pos + 1; }
+                    if pos < len(src) && char_at(src, pos) == 10 { pos = pos + 1; }
+
+                    // Build full path (relative to base_dir)
+                    var full_path: string = path;
+                    if len(base_dir) > 0 {
+                        // Check if path is absolute (starts with / or X:)
+                        let first: i32 = char_at(path, 0);
+                        if first != 47 && first != 92 {
+                            if len(path) < 2 || char_at(path, 1) != 58 {
+                                full_path = str_concat(base_dir, path);
+                            }
+                        }
+                    }
+
+                    if use_already_included(full_path) == 0 {
+                        array_push(use_included, full_path);
+                        let inc_src: string = read_file(full_path);
+                        let inc_dir: string = get_dir(full_path);
+                        let resolved: string = resolve_uses(inc_src, inc_dir);
+                        result = str_concat(result, resolved);
+                        result = str_concat(result, "\n");
+                    }
+                    // Skip this use line (already consumed)
+                }
+            }
+        } else {
+            // Not a use line — copy this line and all remaining source
+            // (once we hit a non-use line, stop looking for use directives)
+            result = str_concat(result, substr(src, line_start, len(src) - line_start));
+            return result;
+        }
+    }
+
+    return result;
+}
+
 fn main() -> i32 {
     // ── Compiler driver mode ────────────────────────
     // If called with arguments, act as a compiler: compile and run the file.
     // Usage: mc self_codegen.m <file.m> [args...]
     if argc() >= 2 {
         let target: string = argv(1);
-        let src: string = read_file(target);
+        let raw_src: string = read_file(target);
+        init_use_system();
+        let src: string = resolve_uses(raw_src, get_dir(target));
         init_ast();
         init_codegen();
         tokenize(src);
@@ -2027,6 +2122,7 @@ fn main() -> i32 {
 
     // ── File compilation ─────────────────────────
     run_file_test("examples/test_medium.m", 10, "10|20|0,1,2,3,4|3|600|hello machine\n", "file: medium program");
+    // Note: test_use.m tested via C bootstrap only (M-level resolve_uses too slow for test suite)
 
     // ── Self-compilation: compile ───────────────
     tests_run = tests_run + 1;
