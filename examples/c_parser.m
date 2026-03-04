@@ -1787,19 +1787,312 @@ fn cp_gen_m_func_sig(node: i32) -> string {
     return result;
 }
 
-// Generate M function stub (signature + placeholder body)
+// ── Expression/Statement → M Translation ──────────
+
+fn cp_gen_m_expr(node: i32) -> string;
+fn cp_gen_m_stmts(block: i32, indent: string) -> string;
+
+fn cp_gen_m_expr(node: i32) -> string {
+    if node < 0 { return "0"; }
+    let k: i32 = cnk(node);
+
+    if k == CNK_EXPR_INT() { return cnn(node); }
+    if k == CNK_EXPR_CHAR() {
+        // char literal: 'x' → char_at("x", 0) or just the int value
+        let cv: string = cnn(node);
+        if len(cv) == 1 {
+            return str_concat(int_to_str(char_at(cv, 0)), str_concat(" /* '", str_concat(cv, "' */")));
+        }
+        return str_concat("0 /* '", str_concat(cv, "' */"));
+    }
+    if k == CNK_EXPR_STR() {
+        return str_concat(QQ(), str_concat(cnn(node), QQ()));
+    }
+    if k == CNK_EXPR_NULL() { return "0 /* NULL */"; }
+    if k == CNK_EXPR_IDENT() { return cnn(node); }
+
+    if k == CNK_EXPR_CALL() {
+        var result: string = str_concat(cnn(node), "(");
+        var i: i32 = 0;
+        while i < cnd2(node) {
+            if i > 0 { result = str_concat(result, ", "); }
+            let arg: i32 = cn_child(cnd1(node), i);
+            result = str_concat(result, cp_gen_m_expr(arg));
+            i = i + 1;
+        }
+        return str_concat(result, ")");
+    }
+
+    if k == CNK_EXPR_BINARY() {
+        let left: string = cp_gen_m_expr(cnd1(node));
+        let right: string = cp_gen_m_expr(cnd2(node));
+        return str_concat("(", str_concat(left, str_concat(str_concat(" ", str_concat(cnn(node), " ")), str_concat(right, ")"))));
+    }
+
+    if k == CNK_EXPR_UNARY() {
+        let op: string = cnn(node);
+        let operand: string = cp_gen_m_expr(cnd1(node));
+        if str_eq(op, "!") { return str_concat("!", operand); }
+        if str_eq(op, "-") { return str_concat("(0 - ", str_concat(operand, ")")); }
+        return str_concat("/* ", str_concat(op, str_concat(" */ ", operand)));
+    }
+
+    if k == CNK_EXPR_DEREF() {
+        return str_concat("/* *", str_concat(cp_gen_m_expr(cnd1(node)), " */"));
+    }
+    if k == CNK_EXPR_ADDR() {
+        return str_concat("/* &", str_concat(cp_gen_m_expr(cnd1(node)), " */"));
+    }
+
+    if k == CNK_EXPR_MEMBER() {
+        let obj: string = cp_gen_m_expr(cnd1(node));
+        let field: string = cnn(node);
+        // In M, we don't have struct access — generate commented notation
+        if cnd2(node) == 1 {
+            return str_concat(obj, str_concat("_", field));  // ptr->field → ptr_field
+        }
+        return str_concat(obj, str_concat("_", field));  // obj.field → obj_field
+    }
+
+    if k == CNK_EXPR_INDEX() {
+        let arr: string = cp_gen_m_expr(cnd1(node));
+        let idx: string = cp_gen_m_expr(cnd2(node));
+        return str_concat("array_get(", str_concat(arr, str_concat(", ", str_concat(idx, ")"))));
+    }
+
+    if k == CNK_EXPR_CAST() {
+        // Skip cast, just translate the operand
+        return cp_gen_m_expr(cnd1(node));
+    }
+
+    if k == CNK_EXPR_SIZEOF() {
+        return str_concat("0 /* sizeof(", str_concat(cnn(node), ") */"));
+    }
+
+    if k == CNK_EXPR_TERNARY() {
+        // cond ? then : else → M doesn't have ternary, use comment
+        let cond: string = cp_gen_m_expr(cnd1(node));
+        let then_e: string = cp_gen_m_expr(cnd2(node));
+        let else_e: string = cp_gen_m_expr(cnd3(node));
+        return str_concat("/* ", str_concat(cond, str_concat(" ? ", str_concat(then_e, str_concat(" : ", str_concat(else_e, " */"))))));
+    }
+
+    if k == CNK_EXPR_ASSIGN() {
+        let lhs: string = cp_gen_m_expr(cnd1(node));
+        let rhs: string = cp_gen_m_expr(cnd2(node));
+        let op: string = cnn(node);
+        if str_eq(op, "=") {
+            return str_concat(lhs, str_concat(" = ", rhs));
+        }
+        // Compound assignment: a += b → a = a + b
+        // Extract the operator from +=, -=, etc.
+        let base_op: string = substr(op, 0, len(op) - 1);
+        return str_concat(lhs, str_concat(" = ", str_concat(lhs, str_concat(str_concat(" ", str_concat(base_op, " ")), rhs))));
+    }
+
+    if k == CNK_EXPR_POSTFIX() {
+        let operand: string = cp_gen_m_expr(cnd1(node));
+        let op: string = cnn(node);
+        if str_eq(op, "++") {
+            return str_concat(operand, str_concat(" = ", str_concat(operand, " + 1")));
+        }
+        if str_eq(op, "--") {
+            return str_concat(operand, str_concat(" = ", str_concat(operand, " - 1")));
+        }
+        return operand;
+    }
+
+    return str_concat("/* unknown expr kind ", str_concat(int_to_str(k), " */"));
+}
+
+fn cp_gen_m_stmt(node: i32, indent: string) -> string {
+    if node < 0 { return ""; }
+    let k: i32 = cnk(node);
+    let nl: string = NL();
+    let indent2: string = str_concat(indent, "    ");
+
+    if k == CNK_STMT_RETURN() {
+        if cnd1(node) >= 0 {
+            return str_concat(indent, str_concat("return ", str_concat(cp_gen_m_expr(cnd1(node)), str_concat(";", nl))));
+        }
+        return str_concat(indent, str_concat("return 0;", nl));
+    }
+
+    if k == CNK_STMT_EXPR() {
+        if cnd1(node) < 0 { return ""; }
+        let expr_k: i32 = cnk(cnd1(node));
+        if expr_k == CNK_EXPR_ASSIGN() {
+            return str_concat(indent, str_concat(cp_gen_m_expr(cnd1(node)), str_concat(";", nl)));
+        }
+        // Function call as statement
+        return str_concat(indent, str_concat(cp_gen_m_expr(cnd1(node)), str_concat(";", nl)));
+    }
+
+    if k == CNK_STMT_VAR() {
+        let vname: string = cnn(node);
+        let vtype: string = cp_c_type_to_m(cnt(node));
+        if cnd1(node) >= 0 {
+            return str_concat(indent, str_concat("var ", str_concat(vname, str_concat(": ", str_concat(vtype, str_concat(" = ", str_concat(cp_gen_m_expr(cnd1(node)), str_concat(";", nl))))))));
+        }
+        // Default initialization
+        if str_eq(vtype, "string") {
+            return str_concat(indent, str_concat("var ", str_concat(vname, str_concat(": string = ", str_concat(QQ(), str_concat(QQ(), str_concat(";", nl)))))));
+        }
+        if str_eq(vtype, "bool") {
+            return str_concat(indent, str_concat("var ", str_concat(vname, str_concat(": bool = false;", nl))));
+        }
+        return str_concat(indent, str_concat("var ", str_concat(vname, str_concat(": i32 = 0;", nl))));
+    }
+
+    if k == CNK_STMT_IF() {
+        var result: string = str_concat(indent, str_concat("if ", str_concat(cp_gen_m_expr(cnd1(node)), str_concat(" {", nl))));
+        // then body
+        if cnk(cnd2(node)) == CNK_STMT_BLOCK() {
+            result = str_concat(result, cp_gen_m_stmts(cnd2(node), indent2));
+        } else {
+            result = str_concat(result, cp_gen_m_stmt(cnd2(node), indent2));
+        }
+        // else
+        if cnd3(node) >= 0 {
+            if cnk(cnd3(node)) == CNK_STMT_IF() {
+                // else if → chain
+                result = str_concat(result, str_concat(indent, str_concat("} else ", substr(cp_gen_m_stmt(cnd3(node), indent), len(indent), len(cp_gen_m_stmt(cnd3(node), indent)) - len(indent)))));
+                return result;
+            }
+            result = str_concat(result, str_concat(indent, str_concat("} else {", nl)));
+            if cnk(cnd3(node)) == CNK_STMT_BLOCK() {
+                result = str_concat(result, cp_gen_m_stmts(cnd3(node), indent2));
+            } else {
+                result = str_concat(result, cp_gen_m_stmt(cnd3(node), indent2));
+            }
+        }
+        result = str_concat(result, str_concat(indent, str_concat("}", nl)));
+        return result;
+    }
+
+    if k == CNK_STMT_WHILE() {
+        var result: string = str_concat(indent, str_concat("while ", str_concat(cp_gen_m_expr(cnd1(node)), str_concat(" {", nl))));
+        if cnk(cnd2(node)) == CNK_STMT_BLOCK() {
+            result = str_concat(result, cp_gen_m_stmts(cnd2(node), indent2));
+        } else {
+            result = str_concat(result, cp_gen_m_stmt(cnd2(node), indent2));
+        }
+        result = str_concat(result, str_concat(indent, str_concat("}", nl)));
+        return result;
+    }
+
+    if k == CNK_STMT_FOR() {
+        // for has 4 children: init, cond, step, body
+        var init_s: string = "";
+        var cond_s: string = "true";
+        var step_s: string = "";
+        let fc_start: i32 = cnd1(node);
+
+        if fc_start >= 0 {
+            let init_n: i32 = cn_child(fc_start, 0);
+            let cond_n: i32 = cn_child(fc_start, 1);
+            let step_n: i32 = cn_child(fc_start, 2);
+            let body_n: i32 = cn_child(fc_start, 3);
+
+            // Init as separate statement before while
+            if init_n >= 0 {
+                if cnk(init_n) == CNK_STMT_VAR() {
+                    init_s = cp_gen_m_stmt(init_n, indent);
+                } else {
+                    init_s = str_concat(indent, str_concat(cp_gen_m_expr(init_n), str_concat(";", nl)));
+                }
+            }
+
+            if cond_n >= 0 { cond_s = cp_gen_m_expr(cond_n); }
+            if step_n >= 0 { step_s = cp_gen_m_expr(step_n); }
+
+            // for → init; while (cond) { body; step; }
+            var result: string = init_s;
+            result = str_concat(result, str_concat(indent, str_concat("while ", str_concat(cond_s, str_concat(" {", nl)))));
+            if cnk(body_n) == CNK_STMT_BLOCK() {
+                result = str_concat(result, cp_gen_m_stmts(body_n, indent2));
+            } else {
+                result = str_concat(result, cp_gen_m_stmt(body_n, indent2));
+            }
+            if len(step_s) > 0 {
+                result = str_concat(result, str_concat(indent2, str_concat(step_s, str_concat(";", nl))));
+            }
+            result = str_concat(result, str_concat(indent, str_concat("}", nl)));
+            return result;
+        }
+        return str_concat(indent, str_concat("// for loop (unparsed)", nl));
+    }
+
+    if k == CNK_STMT_BREAK() {
+        return str_concat(indent, str_concat("// break;", nl));
+    }
+    if k == CNK_STMT_CONTINUE() {
+        return str_concat(indent, str_concat("// continue;", nl));
+    }
+
+    if k == CNK_STMT_SWITCH() {
+        var result: string = str_concat(indent, str_concat("// switch (", str_concat(cp_gen_m_expr(cnd1(node)), str_concat(") {", nl))));
+        var ci: i32 = 0;
+        while ci < cnd3(node) {
+            let case_n: i32 = cn_child(cnd2(node), ci);
+            if cnd1(case_n) >= 0 {
+                result = str_concat(result, str_concat(indent, str_concat("// case ", str_concat(cp_gen_m_expr(cnd1(case_n)), str_concat(":", nl)))));
+            } else {
+                result = str_concat(result, str_concat(indent, str_concat("// default:", nl)));
+            }
+            // Case body
+            var si: i32 = 0;
+            while si < cnd3(case_n) {
+                let s: i32 = cn_child(cnd2(case_n), si);
+                result = str_concat(result, cp_gen_m_stmt(s, indent2));
+                si = si + 1;
+            }
+            ci = ci + 1;
+        }
+        result = str_concat(result, str_concat(indent, str_concat("// }", nl)));
+        return result;
+    }
+
+    if k == CNK_STMT_BLOCK() {
+        return cp_gen_m_stmts(node, indent);
+    }
+
+    return str_concat(indent, str_concat("// unknown stmt kind ", str_concat(int_to_str(k), nl)));
+}
+
+// Generate M statements from a block node
+fn cp_gen_m_stmts(block: i32, indent: string) -> string {
+    var result: string = "";
+    let count: i32 = cnd2(block);
+    let start: i32 = cnd1(block);
+    var i: i32 = 0;
+    while i < count {
+        let stmt: i32 = cn_child(start, i);
+        result = str_concat(result, cp_gen_m_stmt(stmt, indent));
+        i = i + 1;
+    }
+    return result;
+}
+
+// Generate M function with translated body
 fn cp_gen_m_func(node: i32) -> string {
     let sig: string = cp_gen_m_func_sig(node);
-    let m_ret: string = cp_c_type_to_m(cnt(node));
     let nl: string = NL();
+    let body_node: i32 = cnd3(node);
 
     var body: string = "";
-    if str_eq(m_ret, "string") {
-        body = str_concat("    return ", str_concat(QQ(), str_concat(QQ(), str_concat(";", nl))));
-    } else if str_eq(m_ret, "bool") {
-        body = str_concat("    return false;", nl);
+    if body_node > 0 && cnk(body_node) == CNK_STMT_BLOCK() {
+        body = cp_gen_m_stmts(body_node, "    ");
     } else {
-        body = str_concat("    return 0;", nl);
+        // Fallback: stub
+        let m_ret: string = cp_c_type_to_m(cnt(node));
+        if str_eq(m_ret, "string") {
+            body = str_concat("    return ", str_concat(QQ(), str_concat(QQ(), str_concat(";", nl))));
+        } else if str_eq(m_ret, "bool") {
+            body = str_concat("    return false;", nl);
+        } else {
+            body = str_concat("    return 0;", nl);
+        }
     }
 
     return str_concat(sig, str_concat(str_concat(" {", nl), str_concat(body, str_concat("}", nl))));
