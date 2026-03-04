@@ -178,6 +178,7 @@ fn show_help() {
     println("    unused                 Find functions with no callers");
     println("    hotspots [N]           Show N most-called functions");
     println("    health                 Code health report with score");
+    println("    explain <name>         Machine explains what a function does");
     println("    summary                Narrative summary of analyzed code");
     println("    focus <name>           Deep analysis of a single function");
     println("    suggest                Improvement suggestions");
@@ -1695,6 +1696,124 @@ fn cmd_summary() {
     println("");
 }
 
+fn cmd_explain(args: string) {
+    let name: string = str_trim(args);
+    if len(name) == 0 {
+        println("  Error: use 'explain <function_name>'");
+        return;
+    }
+
+    if ana_get_func_count() == 0 {
+        println("  No analysis loaded. Use 'analyze <file.m>' first.");
+        return;
+    }
+
+    let idx: i32 = ana_find_func(name);
+    if idx < 0 {
+        print("  Function not found: ");
+        println(name);
+        return;
+    }
+
+    let lines: i32 = ana_func_lines(idx);
+    let params: i32 = ana_func_params(idx);
+    let calls: i32 = ana_func_call_count(idx);
+    let callers: i32 = ana_caller_count(name);
+    let role: i32 = ana_func_role(idx);
+
+    println("");
+    print("  ");
+    print(name);
+
+    // Describe based on role
+    if role == 1 {
+        print(" is a constant — returns a fixed value");
+    } else if role == 5 {
+        print(" is a test function — verifies behavior");
+    } else if role == 4 {
+        print(" is an entry point — called from outside this file");
+    } else if role == 2 {
+        print(" is a utility — a helper used by other functions");
+    } else {
+        print(" is a core function — central to this file's purpose");
+    }
+    println(".");
+
+    // Size description
+    print("  It is ");
+    if lines <= 5 { print("tiny"); }
+    else if lines <= 20 { print("small"); }
+    else if lines <= 50 { print("medium-sized"); }
+    else if lines <= 100 { print("large"); }
+    else if lines <= 200 { print("very large"); }
+    else { print("massive"); }
+    print(" (");
+    print(int_to_str(lines));
+    print(" lines)");
+    if params > 0 {
+        print(" and takes ");
+        print(int_to_str(params));
+        print(" parameter");
+        if params > 1 { print("s"); }
+    }
+    println(".");
+
+    // Dependency description
+    if calls > 0 {
+        print("  It depends on ");
+        print(int_to_str(calls));
+        print(" other function");
+        if calls > 1 { print("s"); }
+
+        // Name the most important callees (first 3)
+        print(": ");
+        var shown: i32 = 0;
+        var i: i32 = 0;
+        while i < calls && shown < 3 {
+            if shown > 0 { print(", "); }
+            print(ana_func_call_name(idx, i));
+            shown = shown + 1;
+            i = i + 1;
+        }
+        if calls > 3 {
+            print(" and ");
+            print(int_to_str(calls - 3));
+            print(" more");
+        }
+        println(".");
+    } else {
+        println("  It has no dependencies on other functions.");
+    }
+
+    // Impact description
+    if callers > 5 {
+        print("  It is widely used (");
+        print(int_to_str(callers));
+        println(" callers) — changes here ripple through the codebase.");
+    } else if callers > 0 {
+        print("  It is used by ");
+        print(int_to_str(callers));
+        print(" function");
+        if callers > 1 { print("s"); }
+        println(".");
+    } else if role != 4 && role != 5 && role != 1 {
+        println("  It appears unused — no other function calls it.");
+    }
+
+    // Pattern detection
+    if lines > 100 && calls > 20 {
+        println("  Pattern: dispatcher — large function routing to many smaller ones.");
+    } else if lines <= 5 && calls == 0 && callers > 3 {
+        println("  Pattern: accessor — simple value provider used broadly.");
+    } else if callers == 0 && calls > 5 {
+        println("  Pattern: orchestrator — coordinates others but isn't called internally.");
+    } else if lines <= 2 && callers > 0 {
+        println("  Pattern: wrapper — thin delegation layer.");
+    }
+
+    println("");
+}
+
 fn cmd_focus(args: string) {
     let name: string = str_trim(args);
     if len(name) == 0 {
@@ -2483,6 +2602,8 @@ fn main() -> i32 {
             else { cmd_hotspots(""); }
         } else if str_eq(line, "health") {
             cmd_health();
+        } else if str_starts_with(line, "explain ") {
+            cmd_explain(substr(line, 8, len(line) - 8));
         } else if str_eq(line, "summary") {
             cmd_summary();
         } else if str_starts_with(line, "focus ") {
