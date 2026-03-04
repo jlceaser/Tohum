@@ -380,6 +380,31 @@ static void gen_expr(CodegenCtx *ctx, Expr *e) {
                 break;
             }
 
+            /* argc() — number of program arguments */
+            if (nlen == 4 && memcmp(name, "argc", 4) == 0) {
+                emit(ctx, OP_BUILTIN_ARGC, e->line);
+                break;
+            }
+
+            /* argv(n) — nth program argument */
+            if (nlen == 4 && memcmp(name, "argv", 4) == 0) {
+                if (e->arg_count >= 1) {
+                    gen_expr(ctx, e->args[0]);
+                }
+                emit(ctx, OP_BUILTIN_ARGV, e->line);
+                break;
+            }
+
+            /* write_file(path, content) — write string to file */
+            if (nlen == 10 && memcmp(name, "write_file", 10) == 0) {
+                if (e->arg_count >= 2) {
+                    gen_expr(ctx, e->args[0]);
+                    gen_expr(ctx, e->args[1]);
+                }
+                emit(ctx, OP_BUILTIN_WRITE_FILE, e->line);
+                break;
+            }
+
             /* println(expr) — print with newline */
             if (nlen == 7 && memcmp(name, "println", 7) == 0) {
                 if (e->arg_count >= 1) {

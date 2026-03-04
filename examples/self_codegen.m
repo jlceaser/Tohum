@@ -557,6 +557,13 @@ fn OP_ARRAY_PUSH() -> i32 { return 51; }
 
 fn OP_HALT() -> i32       { return 52; }
 
+// Program argument opcodes
+fn OP_BUILTIN_ARGC() -> i32 { return 53; }
+fn OP_BUILTIN_ARGV() -> i32 { return 54; }
+
+// File output opcode
+fn OP_BUILTIN_WRITE_FILE() -> i32 { return 55; }
+
 // ── Per-function bytecode chunk ──────────────────────
 
 // Bytecode: flat array of bytes per function
@@ -853,6 +860,29 @@ fn gen_expr(idx: i32) -> i32 {
         let arg_start: i32 = ne(idx);
         let argc: i32 = ne2(idx);
         let callee_name: string = nn(callee_idx);
+
+        // Built-in: argc() -> int
+        if str_eq(callee_name, "argc") {
+            emit_byte(OP_BUILTIN_ARGC());
+            return 0;
+        }
+
+        // Built-in: argv(n) -> string
+        if str_eq(callee_name, "argv") {
+            if argc >= 1 { gen_expr(child(arg_start, 0)); }
+            emit_byte(OP_BUILTIN_ARGV());
+            return 0;
+        }
+
+        // Built-in: write_file(path, content) -> bool
+        if str_eq(callee_name, "write_file") {
+            if argc >= 2 {
+                gen_expr(child(arg_start, 0));
+                gen_expr(child(arg_start, 1));
+            }
+            emit_byte(OP_BUILTIN_WRITE_FILE());
+            return 0;
+        }
 
         // Built-in: print(expr)
         if str_eq(callee_name, "print") {
@@ -1277,6 +1307,10 @@ var vm_global_count: i32 = 0;
 
 var vm_output: string = "";
 
+// Program arguments for M VM
+var m_prog_argc: i32 = 0;
+var m_prog_argv: i32 = 0;
+
 fn init_vm() -> i32 {
     vm_types = array_new(0);
     vm_ivals = array_new(0);
@@ -1682,6 +1716,22 @@ fn vm_run_func(fi: i32, argc: i32) -> i32 {
             vm_pop_type(); let cv: i32 = vm_pop_ival();
             vm_push_str(char_to_str(cv));
 
+        // ── Program argument built-ins ──────────────
+        } else if op == OP_BUILTIN_ARGC() {
+            vm_push_int(m_prog_argc);
+        } else if op == OP_BUILTIN_ARGV() {
+            vm_pop_type(); let n: i32 = vm_pop_ival();
+            if n >= 0 && n < m_prog_argc {
+                vm_push_str(array_get(m_prog_argv, n));
+            } else {
+                vm_push_str("");
+            }
+        } else if op == OP_BUILTIN_WRITE_FILE() {
+            vm_pop_type(); let content: string = vm_pop_sval();
+            vm_pop_type(); let path: string = vm_pop_sval();
+            write_file(path, content);
+            vm_push_bool(1);
+
         // ── Array built-ins ──────────────────────────
         } else if op == OP_ARRAY_NEW() {
             vm_pop_type(); // pop capacity hint (not used)
@@ -1833,6 +1883,34 @@ fn run_file_test(path: string, expected_ret: i32, expected_out: string, label: s
 }
 
 fn main() -> i32 {
+    // ── Compiler driver mode ────────────────────────
+    // If called with arguments, act as a compiler: compile and run the file.
+    // Usage: mc self_codegen.m <file.m> [args...]
+    if argc() >= 2 {
+        let target: string = argv(1);
+        let src: string = read_file(target);
+        init_ast();
+        init_codegen();
+        tokenize(src);
+        let root: i32 = parse_program();
+        compile_program(root);
+
+        // Pass remaining args to the compiled program
+        m_prog_argc = argc() - 2;
+        m_prog_argv = array_new(0);
+        var argi: i32 = 2;
+        while argi < argc() {
+            array_push(m_prog_argv, argv(argi));
+            argi = argi + 1;
+        }
+
+        init_vm();
+        let result: i32 = vm_run_program();
+        print(vm_output);
+        return result;
+    }
+
+    // ── Test mode ───────────────────────────────────
     println("=== M Bytecode Compiler ===");
     println("tokenize -> parse -> compile -> run bytecode");
     println("");
@@ -1902,6 +1980,13 @@ fn main() -> i32 {
     run_test("fn main() -> i32 { if str_eq(\"ab\", \"ab\") { return 1; } return 0; }", 1, "", "str_eq true");
     run_test("fn main() -> i32 { if str_eq(\"ab\", \"cd\") { return 1; } return 0; }", 0, "", "str_eq false");
     run_test("fn main() -> i32 { print(char_to_str(65)); return 0; }", 0, "A", "char_to_str");
+
+    // ── argc/argv built-ins ────────────────────────
+    run_test("fn main() -> i32 { return argc(); }", 0, "", "argc (no args)");
+    run_test("fn main() -> i32 { print(int_to_str(argc())); return 0; }", 0, "0", "argc print");
+
+    // ── write_file built-in ─────────────────────────
+    run_test("fn main() -> i32 { write_file(\"/tmp/m_test_write.txt\", \"hello from M\"); let content: string = read_file(\"/tmp/m_test_write.txt\"); print(content); return len(content); }", 12, "hello from M", "write_file+read_file");
 
     // ── Array built-ins ──────────────────────────
     run_test("fn main() -> i32 { let a: i32 = array_new(0); return array_len(a); }", 0, "", "array new+len");

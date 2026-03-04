@@ -68,6 +68,8 @@ int main(int argc, char **argv) {
     /* Run */
     VM vm;
     vm_init(&vm, compiler_module(&c));
+    vm.prog_argc = argc - 1;
+    vm.prog_argv = (const char **)(argv + 1);
     VMResult r = vm_run(&vm, "main");
 
     /* Print captured output */

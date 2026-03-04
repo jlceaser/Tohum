@@ -35,6 +35,10 @@ typedef struct {
     /* Error state */
     int had_error;
     char error_msg[256];
+
+    /* Program arguments (set by driver before vm_run) */
+    int prog_argc;
+    const char **prog_argv;
 } VM;
 
 typedef enum {

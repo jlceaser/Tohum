@@ -92,6 +92,13 @@ typedef enum {
 
     /* System */
     OP_HALT,            /* stop execution */
+
+    /* Program arguments */
+    OP_BUILTIN_ARGC,    /* argc() -> int: number of program arguments */
+    OP_BUILTIN_ARGV,    /* argv(n) -> string: nth program argument */
+
+    /* File output */
+    OP_BUILTIN_WRITE_FILE, /* write_file(path, content) -> bool */
 } OpCode;
 
 /* --- Value types in the VM --- */

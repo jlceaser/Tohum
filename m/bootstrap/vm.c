@@ -666,7 +666,48 @@ static VMResult run(VM *vm) {
         case OP_HALT:
             return VM_HALT;
 
-        /* NOP removed from opcode set */
+        case OP_BUILTIN_ARGC:
+            push(vm, make_int(vm->prog_argc));
+            break;
+
+        case OP_BUILTIN_ARGV: {
+            Val idx = pop(vm);
+            int n = (int)idx.i;
+            if (n < 0 || n >= vm->prog_argc) {
+                vm_set_error(vm, "argv(%d) out of bounds (argc=%d)",
+                         n, vm->prog_argc);
+                return VM_ERROR;
+            }
+            const char *arg = vm->prog_argv[n];
+            Val result = {0};
+            result.type = VAL_STRING;
+            result.s = arg;
+            result.s_len = (int)strlen(arg);
+            push(vm, result);
+            break;
+        }
+
+        case OP_BUILTIN_WRITE_FILE: {
+            Val content = pop(vm);
+            Val path = pop(vm);
+            if (path.type != VAL_STRING || content.type != VAL_STRING) {
+                vm_set_error(vm, "write_file() requires string path and content");
+                return VM_ERROR;
+            }
+            char *cpath = tohum_alloc(path.s_len + 1);
+            memcpy(cpath, path.s, path.s_len);
+            cpath[path.s_len] = '\0';
+            FILE *f = fopen(cpath, "wb");
+            int ok = 0;
+            if (f) {
+                fwrite(content.s, 1, content.s_len, f);
+                fclose(f);
+                ok = 1;
+            }
+            tohum_free(cpath, path.s_len + 1);
+            push(vm, make_bool(ok));
+            break;
+        }
 
         default:
             vm_set_error(vm, "unknown opcode: %d", op);
