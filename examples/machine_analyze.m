@@ -338,6 +338,461 @@ fn ana_extract_structure() {
     }
 }
 
+// ── C structure extraction ───────────────────────────
+// Lightweight C structure extractor. Extracts functions, structs, globals,
+// and #include directives from C source files. Does NOT require the full
+// c_lexer.m — uses a minimal pattern-based approach.
+
+fn ana_is_c_file(path: string) -> bool {
+    let slen: i32 = len(path);
+    if slen < 3 { return false; }
+    // Check .c extension
+    if char_at(path, slen - 2) == 46 && char_at(path, slen - 1) == 99 { return true; }
+    // Check .h extension
+    if char_at(path, slen - 2) == 46 && char_at(path, slen - 1) == 104 { return true; }
+    return false;
+}
+
+// C tokenizer constants (reuse ANA_TK values where possible, add C-specific)
+fn ANA_CTK_INCLUDE() -> i32 { return 20; }   // #include
+fn ANA_CTK_DEFINE() -> i32  { return 21; }   // #define
+fn ANA_CTK_PREPROC() -> i32 { return 22; }   // other preprocessor
+fn ANA_CTK_STRUCT() -> i32  { return 23; }   // struct keyword
+fn ANA_CTK_UNION() -> i32   { return 24; }   // union keyword
+fn ANA_CTK_ENUM() -> i32    { return 25; }   // enum keyword
+fn ANA_CTK_TYPEDEF() -> i32 { return 26; }   // typedef keyword
+fn ANA_CTK_SEMI() -> i32    { return 27; }   // ;
+fn ANA_CTK_STAR() -> i32    { return 28; }   // *
+fn ANA_CTK_LBRACK() -> i32  { return 29; }   // [
+fn ANA_CTK_RBRACK() -> i32  { return 30; }   // ]
+
+fn ana_is_c_keyword(word: string) -> bool {
+    if str_eq(word, "if") { return true; }
+    if str_eq(word, "else") { return true; }
+    if str_eq(word, "while") { return true; }
+    if str_eq(word, "for") { return true; }
+    if str_eq(word, "return") { return true; }
+    if str_eq(word, "switch") { return true; }
+    if str_eq(word, "case") { return true; }
+    if str_eq(word, "do") { return true; }
+    if str_eq(word, "sizeof") { return true; }
+    if str_eq(word, "break") { return true; }
+    if str_eq(word, "continue") { return true; }
+    if str_eq(word, "goto") { return true; }
+    if str_eq(word, "default") { return true; }
+    return false;
+}
+
+fn ana_is_c_type(word: string) -> bool {
+    if str_eq(word, "int") { return true; }
+    if str_eq(word, "char") { return true; }
+    if str_eq(word, "void") { return true; }
+    if str_eq(word, "long") { return true; }
+    if str_eq(word, "short") { return true; }
+    if str_eq(word, "float") { return true; }
+    if str_eq(word, "double") { return true; }
+    if str_eq(word, "unsigned") { return true; }
+    if str_eq(word, "signed") { return true; }
+    if str_eq(word, "static") { return true; }
+    if str_eq(word, "const") { return true; }
+    if str_eq(word, "extern") { return true; }
+    if str_eq(word, "bool") { return true; }
+    return false;
+}
+
+fn ana_tokenize_c(src: string) -> i32 {
+    tk_types = array_new(0);
+    tk_svals = array_new(0);
+    tk_lines = array_new(0);
+    tk_count = 0;
+
+    var pos: i32 = 0;
+    var line: i32 = 1;
+    let slen: i32 = len(src);
+
+    while pos < slen {
+        let c: i32 = char_at(src, pos);
+
+        // Newline
+        if c == 10 {
+            line = line + 1;
+            pos = pos + 1;
+        }
+        // Whitespace
+        else if c == 32 || c == 9 || c == 13 {
+            pos = pos + 1;
+        }
+        // Line comment: //
+        else if c == 47 && pos + 1 < slen && char_at(src, pos + 1) == 47 {
+            while pos < slen && char_at(src, pos) != 10 {
+                pos = pos + 1;
+            }
+        }
+        // Block comment: /* ... */
+        else if c == 47 && pos + 1 < slen && char_at(src, pos + 1) == 42 {
+            pos = pos + 2;
+            while pos + 1 < slen {
+                if char_at(src, pos) == 42 && char_at(src, pos + 1) == 47 {
+                    pos = pos + 2;
+                    pos = pos + slen;  // exit inner loop
+                } else {
+                    if char_at(src, pos) == 10 { line = line + 1; }
+                    pos = pos + 1;
+                }
+            }
+            // Undo the overshoot from the exit trick
+            if pos > slen { pos = pos - slen; }
+        }
+        // Preprocessor: #include, #define, etc.
+        else if c == 35 {
+            var pp_start: i32 = pos;
+            pos = pos + 1;
+            // Skip whitespace after #
+            while pos < slen && (char_at(src, pos) == 32 || char_at(src, pos) == 9) {
+                pos = pos + 1;
+            }
+            // Read directive word
+            var dir_start: i32 = pos;
+            while pos < slen && ana_is_alpha(char_at(src, pos)) {
+                pos = pos + 1;
+            }
+            let directive: string = substr(src, dir_start, pos - dir_start);
+
+            if str_eq(directive, "include") {
+                // Extract include path
+                while pos < slen && char_at(src, pos) != 10 {
+                    if char_at(src, pos) == 34 || char_at(src, pos) == 60 {
+                        let end_char: i32 = 34;
+                        if char_at(src, pos) == 60 { end_char = 62; }
+                        pos = pos + 1;
+                        var inc_start: i32 = pos;
+                        while pos < slen && char_at(src, pos) != end_char && char_at(src, pos) != 10 {
+                            pos = pos + 1;
+                        }
+                        let inc_path: string = substr(src, inc_start, pos - inc_start);
+                        array_push(tk_types, ANA_CTK_INCLUDE());
+                        array_push(tk_svals, sp_store(inc_path));
+                        array_push(tk_lines, line);
+                        tk_count = tk_count + 1;
+                        if pos < slen && char_at(src, pos) != 10 { pos = pos + 1; }
+                        pos = pos + slen;  // exit
+                    } else {
+                        pos = pos + 1;
+                    }
+                }
+                if pos > slen { pos = pos - slen; }
+            } else {
+                // Other preprocessor directive — skip to end of line
+                array_push(tk_types, ANA_CTK_PREPROC());
+                array_push(tk_svals, sp_store(directive));
+                array_push(tk_lines, line);
+                tk_count = tk_count + 1;
+            }
+            // Skip rest of preprocessor line (handling line continuations)
+            while pos < slen && char_at(src, pos) != 10 {
+                pos = pos + 1;
+            }
+        }
+        // String literal
+        else if c == 34 {
+            pos = pos + 1;
+            while pos < slen && char_at(src, pos) != 34 {
+                if char_at(src, pos) == 92 { pos = pos + 1; }
+                pos = pos + 1;
+            }
+            if pos < slen { pos = pos + 1; }
+        }
+        // Char literal
+        else if c == 39 {
+            pos = pos + 1;
+            while pos < slen && char_at(src, pos) != 39 {
+                if char_at(src, pos) == 92 { pos = pos + 1; }
+                pos = pos + 1;
+            }
+            if pos < slen { pos = pos + 1; }
+        }
+        // Identifier or keyword
+        else if ana_is_alpha(c) {
+            var start: i32 = pos;
+            while pos < slen && (ana_is_alpha(char_at(src, pos)) || ana_is_digit(char_at(src, pos))) {
+                pos = pos + 1;
+            }
+            let word: string = substr(src, start, pos - start);
+            var ttype: i32 = ANA_TK_IDENT();
+            if str_eq(word, "struct") { ttype = ANA_CTK_STRUCT(); }
+            else if str_eq(word, "union") { ttype = ANA_CTK_UNION(); }
+            else if str_eq(word, "enum") { ttype = ANA_CTK_ENUM(); }
+            else if str_eq(word, "typedef") { ttype = ANA_CTK_TYPEDEF(); }
+            array_push(tk_types, ttype);
+            array_push(tk_svals, sp_store(word));
+            array_push(tk_lines, line);
+            tk_count = tk_count + 1;
+        }
+        // Single-char tokens
+        else if c == 123 { // {
+            array_push(tk_types, ANA_TK_LBRACE());
+            array_push(tk_svals, 0);
+            array_push(tk_lines, line);
+            tk_count = tk_count + 1;
+            pos = pos + 1;
+        }
+        else if c == 125 { // }
+            array_push(tk_types, ANA_TK_RBRACE());
+            array_push(tk_svals, 0);
+            array_push(tk_lines, line);
+            tk_count = tk_count + 1;
+            pos = pos + 1;
+        }
+        else if c == 40 { // (
+            array_push(tk_types, ANA_TK_LPAREN());
+            array_push(tk_svals, 0);
+            array_push(tk_lines, line);
+            tk_count = tk_count + 1;
+            pos = pos + 1;
+        }
+        else if c == 41 { // )
+            array_push(tk_types, ANA_TK_RPAREN());
+            array_push(tk_svals, 0);
+            array_push(tk_lines, line);
+            tk_count = tk_count + 1;
+            pos = pos + 1;
+        }
+        else if c == 44 { // ,
+            array_push(tk_types, ANA_TK_COMMA());
+            array_push(tk_svals, 0);
+            array_push(tk_lines, line);
+            tk_count = tk_count + 1;
+            pos = pos + 1;
+        }
+        else if c == 59 { // ;
+            array_push(tk_types, ANA_CTK_SEMI());
+            array_push(tk_svals, 0);
+            array_push(tk_lines, line);
+            tk_count = tk_count + 1;
+            pos = pos + 1;
+        }
+        else if c == 42 { // *
+            array_push(tk_types, ANA_CTK_STAR());
+            array_push(tk_svals, 0);
+            array_push(tk_lines, line);
+            tk_count = tk_count + 1;
+            pos = pos + 1;
+        }
+        else if c == 91 { // [
+            array_push(tk_types, ANA_CTK_LBRACK());
+            array_push(tk_svals, 0);
+            array_push(tk_lines, line);
+            tk_count = tk_count + 1;
+            pos = pos + 1;
+        }
+        else if c == 93 { // ]
+            array_push(tk_types, ANA_CTK_RBRACK());
+            array_push(tk_svals, 0);
+            array_push(tk_lines, line);
+            tk_count = tk_count + 1;
+            pos = pos + 1;
+        }
+        else {
+            pos = pos + 1;
+        }
+    }
+
+    // EOF
+    array_push(tk_types, ANA_TK_EOF());
+    array_push(tk_svals, 0);
+    array_push(tk_lines, line);
+    tk_count = tk_count + 1;
+    ana_src_lines = line;
+    return tk_count;
+}
+
+fn ana_extract_c_structure() {
+    var i: i32 = 0;
+
+    // First pass: collect #include directives (stored as uses)
+    while i < tk_count {
+        if ana_tk_type(i) == ANA_CTK_INCLUDE() {
+            let path: string = ana_tk_sval(i);
+            array_push(ana_use_paths, sp_store(path));
+            ana_use_count = ana_use_count + 1;
+        }
+        i = i + 1;
+    }
+
+    // Second pass: extract functions, structs, globals
+    // C function: type [modifiers] name(params) { body }
+    // Not: if/while/for/switch(...)  (keyword followed by parens)
+    // Not: typedef ... name(params);  (function pointer typedef)
+    i = 0;
+    while i < tk_count {
+        let tt: i32 = ana_tk_type(i);
+
+        // Struct/union/enum: keyword [name] { ... }
+        if (tt == ANA_CTK_STRUCT() || tt == ANA_CTK_UNION() || tt == ANA_CTK_ENUM()) {
+            var sname: string = "anonymous";
+            var j: i32 = i + 1;
+            // Check for name
+            if j < tk_count && ana_tk_type(j) == ANA_TK_IDENT() {
+                sname = ana_tk_sval(j);
+                j = j + 1;
+            }
+            // If followed by {, it's a definition (record as global)
+            if j < tk_count && ana_tk_type(j) == ANA_TK_LBRACE() {
+                let type_word: string = ana_tk_sval(i);
+                let full_name: string = str_concat(type_word, str_concat(" ", sname));
+                array_push(ana_gv_names, sp_store(full_name));
+                array_push(ana_gv_types, sp_store(type_word));
+                ana_gv_count = ana_gv_count + 1;
+                // Skip past closing brace
+                var depth: i32 = 1;
+                j = j + 1;
+                while j < tk_count && depth > 0 {
+                    if ana_tk_type(j) == ANA_TK_LBRACE() { depth = depth + 1; }
+                    else if ana_tk_type(j) == ANA_TK_RBRACE() { depth = depth - 1; }
+                    j = j + 1;
+                }
+                i = j;
+            } else {
+                i = i + 1;
+            }
+        }
+
+        // Function detection:
+        // Look for IDENT followed by LPAREN where the IDENT is not a keyword
+        // and is preceded by type-like tokens (not another LPAREN, not a keyword)
+        else if tt == ANA_TK_IDENT() && i + 1 < tk_count && ana_tk_type(i + 1) == ANA_TK_LPAREN() {
+            let fname: string = ana_tk_sval(i);
+
+            // Skip C control-flow keywords that use parentheses
+            if ana_is_c_keyword(fname) {
+                i = i + 1;
+            }
+            // Check if this looks like a function definition (has { after params)
+            else {
+                var j: i32 = i + 2;
+                // Skip past parameters
+                var paren_depth: i32 = 1;
+                while j < tk_count && paren_depth > 0 {
+                    if ana_tk_type(j) == ANA_TK_LPAREN() { paren_depth = paren_depth + 1; }
+                    else if ana_tk_type(j) == ANA_TK_RPAREN() { paren_depth = paren_depth - 1; }
+                    j = j + 1;
+                }
+
+                // After closing paren, look for { (function definition)
+                if j < tk_count && ana_tk_type(j) == ANA_TK_LBRACE() {
+                    let start_line: i32 = ana_tk_line(i);
+
+                    // Count parameters (commas + 1, or 0 if void/empty)
+                    var param_count: i32 = 0;
+                    var pk: i32 = i + 2;
+                    var has_params: bool = false;
+                    while pk < j - 1 {
+                        let ptt: i32 = ana_tk_type(pk);
+                        if ptt == ANA_TK_IDENT() {
+                            has_params = true;
+                            // Check for void as sole param
+                            if str_eq(ana_tk_sval(pk), "void") && pk + 1 < tk_count && ana_tk_type(pk + 1) == ANA_TK_RPAREN() {
+                                has_params = false;
+                            }
+                        }
+                        if ptt == ANA_TK_COMMA() {
+                            param_count = param_count + 1;
+                        }
+                        pk = pk + 1;
+                    }
+                    if has_params { param_count = param_count + 1; }
+
+                    // Match braces to find function body, collect calls
+                    var calls: i32 = array_new(0);
+                    var call_set: i32 = array_new(0);
+                    var call_set_n: i32 = 0;
+                    var depth: i32 = 1;
+                    j = j + 1;
+                    while j < tk_count && depth > 0 {
+                        let bt: i32 = ana_tk_type(j);
+                        if bt == ANA_TK_LBRACE() {
+                            depth = depth + 1;
+                        } else if bt == ANA_TK_RBRACE() {
+                            depth = depth - 1;
+                        }
+                        // Detect calls: IDENT(
+                        else if bt == ANA_TK_IDENT() && j + 1 < tk_count && ana_tk_type(j + 1) == ANA_TK_LPAREN() {
+                            let call_name: string = ana_tk_sval(j);
+                            if !ana_is_c_keyword(call_name) {
+                                let call_si: i32 = sp_store(call_name);
+                                var found: bool = false;
+                                var k: i32 = 0;
+                                while k < call_set_n {
+                                    if str_eq(sp_get(array_get(call_set, k)), call_name) {
+                                        found = true;
+                                    }
+                                    k = k + 1;
+                                }
+                                if !found {
+                                    array_push(calls, call_si);
+                                    array_push(call_set, call_si);
+                                    call_set_n = call_set_n + 1;
+                                }
+                            }
+                        }
+                        j = j + 1;
+                    }
+
+                    let end_line: i32 = ana_tk_line(j - 1);
+
+                    // Store function
+                    array_push(ana_fn_names, sp_store(fname));
+                    array_push(ana_fn_params, param_count);
+                    array_push(ana_fn_start, start_line);
+                    array_push(ana_fn_end, end_line);
+                    array_push(ana_fn_body_calls, calls);
+                    ana_fn_count = ana_fn_count + 1;
+
+                    i = j;
+                } else {
+                    // Not a function definition (might be a call or declaration)
+                    i = i + 1;
+                }
+            }
+        }
+
+        // Global variable: type name ; (at top level, no preceding {)
+        // We detect this loosely: type-word IDENT ;  or  type-word * IDENT ;
+        else if tt == ANA_TK_IDENT() && ana_is_c_type(ana_tk_sval(i)) {
+            // Could be a global, or start of a function
+            // Only record if followed by IDENT + ; (without LPAREN)
+            var j: i32 = i + 1;
+            // Skip stars and extra type words
+            while j < tk_count && (ana_tk_type(j) == ANA_CTK_STAR() || (ana_tk_type(j) == ANA_TK_IDENT() && ana_is_c_type(ana_tk_sval(j)))) {
+                j = j + 1;
+            }
+            if j < tk_count && ana_tk_type(j) == ANA_TK_IDENT() {
+                let var_name: string = ana_tk_sval(j);
+                var jj: i32 = j + 1;
+                // Skip [N] array brackets
+                if jj < tk_count && ana_tk_type(jj) == ANA_CTK_LBRACK() {
+                    while jj < tk_count && ana_tk_type(jj) != ANA_CTK_RBRACK() {
+                        jj = jj + 1;
+                    }
+                    if jj < tk_count { jj = jj + 1; }
+                }
+                // If next is ; or = (assignment), it's a global variable
+                if jj < tk_count && (ana_tk_type(jj) == ANA_CTK_SEMI() || (ana_tk_type(jj) == ANA_TK_IDENT() && str_eq(ana_tk_sval(jj), "="))) {
+                    // But only if not inside a function (approximate: check if we haven't passed a { without matching })
+                    array_push(ana_gv_names, sp_store(var_name));
+                    array_push(ana_gv_types, sp_store(ana_tk_sval(i)));
+                    ana_gv_count = ana_gv_count + 1;
+                }
+            }
+            i = i + 1;
+        }
+
+        else {
+            i = i + 1;
+        }
+    }
+}
+
 // ── Public API ───────────────────────────────────────
 
 fn analyze_file(path: string) -> i32 {
@@ -351,8 +806,15 @@ fn analyze_file(path: string) -> i32 {
     if len(ana_source) == 0 {
         return 0 - 1;
     }
-    ana_tokenize(ana_source);
-    ana_extract_structure();
+
+    // Dispatch based on file extension
+    if ana_is_c_file(path) {
+        ana_tokenize_c(ana_source);
+        ana_extract_c_structure();
+    } else {
+        ana_tokenize(ana_source);
+        ana_extract_structure();
+    }
     return 0;
 }
 

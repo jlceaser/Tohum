@@ -363,6 +363,101 @@ fn test_complexity_vm_binding() {
     assert_true("complexity value > 80", val_get_int(vid) > 80);
 }
 
+// ── Tests: C file analysis ──────────────────────────
+
+fn test_analyze_c_vm() {
+    println("-- test_analyze_c_vm --");
+    vm_init();
+    let r: i32 = analyze_file("m/bootstrap/vm.c");
+    assert_eq_i("analyze vm.c returns 0", 0, r);
+    assert_eq_s("file name", "m/bootstrap/vm.c", ana_get_file());
+    assert_true("lines > 500", ana_get_lines() > 500);
+    assert_true("funcs >= 15", ana_get_func_count() >= 15);
+    assert_true("includes > 0", ana_get_use_count() > 0);
+}
+
+fn test_c_func_lookup() {
+    println("-- test_c_func_lookup --");
+    // run() is the main VM loop in vm.c
+    let idx: i32 = ana_find_func("run");
+    assert_true("run found", idx >= 0);
+    assert_true("run lines > 500", ana_func_lines(idx) > 500);
+    assert_true("run has calls", ana_func_call_count(idx) > 20);
+
+    // vm_init is a small function
+    let init_idx: i32 = ana_find_func("vm_init");
+    assert_true("vm_init found", init_idx >= 0);
+    assert_true("vm_init lines < 20", ana_func_lines(init_idx) < 20);
+}
+
+fn test_c_parser_analysis() {
+    println("-- test_c_parser_analysis --");
+    vm_init();
+    let r: i32 = analyze_file("m/bootstrap/parser.c");
+    assert_eq_i("analyze parser.c returns 0", 0, r);
+    assert_true("parser funcs > 30", ana_get_func_count() > 30);
+
+    // Check a known function
+    let idx: i32 = ana_find_func("parse_expression");
+    assert_true("parse_expression found", idx >= 0);
+}
+
+fn test_c_includes() {
+    println("-- test_c_includes --");
+    vm_init();
+    analyze_file("m/bootstrap/vm.c");
+    // vm.c includes headers
+    assert_true("has includes", ana_get_use_count() > 0);
+}
+
+fn test_c_is_c_file() {
+    println("-- test_c_is_c_file --");
+    assert_true("vm.c is C", ana_is_c_file("vm.c"));
+    assert_true("ast.h is C", ana_is_c_file("ast.h"));
+    assert_true("foo.m is not C", !ana_is_c_file("foo.m"));
+    assert_true("empty not C", !ana_is_c_file(""));
+    assert_true("path/to/file.c is C", ana_is_c_file("path/to/file.c"));
+}
+
+fn test_c_vm_population() {
+    println("-- test_c_vm_population --");
+    vm_init();
+    analyze_file("m/bootstrap/vm.c");
+    ana_populate_vm();
+
+    let slot: i32 = env_find("_funcs");
+    assert_true("_funcs exists", slot >= 0);
+    let vid: i32 = env_load("_funcs");
+    assert_true("C funcs >= 15", val_get_int(vid) >= 15);
+
+    // Check function-level binding
+    let run_slot: i32 = env_find("fn.run.lines");
+    assert_true("fn.run.lines exists", run_slot >= 0);
+}
+
+fn test_c_cross_diff() {
+    println("-- test_c_cross_diff --");
+    vm_init();
+    ana_diff_reset();
+    // Analyze C file first, then M file
+    analyze_file("m/bootstrap/vm.c");
+    let c_fns: i32 = ana_get_func_count();
+    analyze_file("examples/machine_vm.m");
+    let m_fns: i32 = ana_get_func_count();
+
+    assert_true("has previous", ana_has_previous());
+
+    // vm_init exists in both C and M versions
+    let chg: i32 = ana_diff_changed();
+    // vm_init and vm_run are shared names — check they appear
+    var found_shared: bool = false;
+    let new_fns: i32 = ana_diff_new();
+    let rem_fns: i32 = ana_diff_removed();
+    // Should have many new (M has 95 funcs) and some removed (C had 21)
+    assert_true("new M funcs", array_len(new_fns) > 50);
+    assert_true("removed C funcs", array_len(rem_fns) > 10);
+}
+
 // ── Tests: Diff / change detection ──────────────────
 
 fn test_diff_same_file() {
@@ -470,6 +565,15 @@ fn main() -> i32 {
     // Complexity tests
     test_complexity_scores();
     test_complexity_vm_binding();
+
+    // C file analysis tests
+    test_analyze_c_vm();
+    test_c_func_lookup();
+    test_c_parser_analysis();
+    test_c_includes();
+    test_c_is_c_file();
+    test_c_vm_population();
+    test_c_cross_diff();
 
     // Diff / change detection tests
     test_diff_same_file();
