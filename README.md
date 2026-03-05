@@ -1,4 +1,4 @@
-# Machine
+# .M
 
 > *Toprak altinda bir tohum var.*
 > *Tohum bilmiyor topragin ustunde ne oldugunu.*
@@ -7,24 +7,24 @@
 
 A self-built intelligence stack. From metal to mind.
 
-## What is Machine?
+## What is .M?
 
 A system that understands software languages — starting with itself, then C, then everything else. Not a text processor. A code-aware computing substrate.
 
 ```
 Hardware (x86/ARM)
   └── M language (bone language, self-hosting, compiles to native)
-       └── Machine VM (temporal computation, uncertainty — written in M)
-            └── Machine AI (reasoning over code and systems)
+       └── .M VM (temporal computation, uncertainty — written in M)
+            └── .M AI (reasoning over code and systems)
 ```
 
 ### M — The Bone Language
 
-A minimal systems language. No hidden allocations, no implicit conversions, no runtime magic. What you write is what runs. M exists so that Machine can exist without depending on anything we didn't build.
+A minimal systems language. No hidden allocations, no implicit conversions, no runtime magic. What you write is what runs. M exists so that .M can exist without depending on anything we didn't build.
 
 **Self-hosting proven:** M compiles itself, transpiles to C, produces native executables. The generated native compiler reproduces itself byte-identically (fixed point).
 
-### Machine VM — Temporal Computation
+### .M VM — Temporal Computation
 
 A virtual machine where every value has a history, uncertainty is native, and programs can inspect their own state. Written in M — not ported from C++, designed from scratch.
 
@@ -34,14 +34,14 @@ A virtual machine where every value has a history, uncertainty is native, and pr
 - **Snapshot/rollback:** save and restore VM state in memory
 - **Persistence:** serialize/deserialize to disk across sessions
 
-### Machine REPL — Interactive Shell
+### .M REPL — Interactive Shell
 
 An interactive terminal for temporal computing. Evaluate expressions, bind values, analyze code.
 
 ```
 $ mc.exe self_codegen.m machine_repl.m
 
-  Machine -Temporal Computing Shell
+  .M — Temporal Computing Shell
   Tohum v0.1 | Type 'help' for commands
 
 machine> bind x = 42
@@ -65,13 +65,13 @@ machine> callers env_find
     <- env_bind, env_load, env_forget, env_get_timeline, env_is_forgotten, vm_exec
 ```
 
-### Machine AI — The Mind (in progress)
+### .M AI — The Mind (in progress)
 
-Machine doesn't just read code — it reasons about it. Built on VM primitives: temporal memory, uncertainty, self-reflection.
+.M doesn't just read code — it reasons about it. Built on VM primitives: temporal memory, uncertainty, self-reflection.
 
-**Working today:** analyze → health → suggest → explain → audit → **think**. Machine classifies functions, scores risk, detects patterns, generates suggestions — and now runs autonomous cognition cycles.
+**Working today:** analyze → health → suggest → explain → audit → **think**. .M classifies functions, scores risk, detects patterns, generates suggestions — and now runs autonomous cognition cycles.
 
-**Inner loop (new):** Machine predicts code properties before analyzing, measures prediction error, and decides what to explore next — without human commands. The `think` command runs N autonomous cycles: predict → perceive → measure → decide → act.
+**Inner loop (new):** .M predicts code properties before analyzing, measures prediction error, and decides what to explore next — without human commands. The `think` command runs N autonomous cycles: predict → perceive → measure → decide → act.
 
 **Coming:** deeper self-model, intent understanding, cross-language knowledge transfer.
 
@@ -88,17 +88,17 @@ Machine doesn't just read code — it reasons about it. Built on VM primitives: 
 | C lexer (in M) | complete | 13/13 |
 | C parser (in M) | complete | 28/28 |
 | C → M translator | working | 6 files, 3249 lines M, 124 functions |
-| Machine VM | **working** | 89/89 |
-| Machine assembler | **working** | 27/27 |
-| Machine REPL | **working** | Interactive shell + expression eval |
+| .M VM | **working** | 89/89 |
+| .M assembler | **working** | 27/27 |
+| .M REPL | **working** | Interactive shell + expression eval |
 | Code analyzer | **working** | 147/147 |
-| Machine Mind | **working** | 61/61 |
+| .M Mind | **working** | 61/61 |
 
 **Total: 387 tests passing across 5 test suites.**
 
-## Phase 3: Machine Reads Code
+## Phase 3: .M Reads Code
 
-Machine can now analyze M source files and represent program structure as temporal knowledge:
+.M can now analyze M source files and represent program structure as temporal knowledge:
 
 ```
 machine> analyze examples/self_codegen.m
@@ -152,7 +152,7 @@ machine> diff
   - Removed (95): OP_NOP, vm_exec, env_bind ...
 ```
 
-C file analysis — Machine reads C source files too:
+C file analysis — .M reads C source files too:
 ```
 machine> analyze m/bootstrap/vm.c
   Analyzed: m/bootstrap/vm.c
@@ -171,7 +171,7 @@ machine> complexity 3
   3. vm_serialize  ~49 (conf:90%)   42L  14 calls
 ```
 
-Code intelligence — Machine reasons about code:
+Code intelligence — .M reasons about code:
 ```
 machine> health
   Health: 85/100 (Grade A)  conf:80%
@@ -228,9 +228,9 @@ machine> audit
   VERDICT: GOOD — minor issues, low risk
 ```
 
-### Phase 4: Machine Thinks
+### Phase 4: .M Thinks
 
-Machine can now run autonomous cognition cycles — predicting, perceiving, measuring, and deciding without human commands:
+.M can now run autonomous cognition cycles — predicting, perceiving, measuring, and deciding without human commands:
 
 ```
 machine> seed examples/machine_vm.m
@@ -238,7 +238,7 @@ machine> seed examples/machine_asm.m
 machine> seed examples/machine_analyze.m
 machine> think 5
 
-  Machine Mind — 5 cycles
+  .M Mind — 5 cycles
   ─────────────────────
   [1] explore examples/machine_vm.m  error:18%
   [2] explore examples/machine_asm.m  error:73%
@@ -258,7 +258,7 @@ machine> history mind.competence
     [5] ~59 (conf:85%)  (measure)  <- current
 ```
 
-The inner loop: predict code properties → analyze → measure prediction error → learn → decide next action. Auto-discovers dependencies through `use` directives. Predictions improve as the model accumulates experience.
+The inner loop: predict code properties → analyze → measure prediction error → learn → decide next action. Auto-discovers dependencies through `use` directives.
 
 ## Self-Hosting Proof
 
@@ -293,7 +293,7 @@ gcc -O2 -o mc.exe m/generated/self_codegen.c
 
 # Run all tests
 ./mc.exe examples/self_codegen.m           # M compiler (63 tests)
-./mc.exe examples/machine_vm_test.m        # Machine VM (89 tests)
+./mc.exe examples/machine_vm_test.m        # .M VM (89 tests)
 ./mc.exe examples/machine_asm.m            # Assembler (27 tests)
 ./mc.exe examples/machine_analyze_test.m   # Analyzer (112 tests)
 
@@ -358,9 +358,9 @@ include/              Headers
 - [x] C lexer in M (Phase 2)
 - [x] C parser in M (structural + expression/statement)
 - [x] C → M translator (bootstrap self-translation)
-- [x] Machine VM — temporal computation engine (89/89 tests)
-- [x] Machine assembler — text-to-bytecode (27/27 tests)
-- [x] Machine REPL — interactive temporal computing shell
+- [x] .M VM — temporal computation engine (89/89 tests)
+- [x] .M assembler — text-to-bytecode (27/27 tests)
+- [x] .M REPL — interactive temporal computing shell
 - [x] Code analyzer — M + C file analysis (147/147 tests)
 - [x] Cross-file analysis in REPL (dependencies, where, project)
 - [x] C file analysis via temporal VM (C structure extraction)

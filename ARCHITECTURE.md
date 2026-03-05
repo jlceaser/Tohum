@@ -1,4 +1,4 @@
-# Machine Architecture
+# .M Architecture
 
 > Every meaningful layer of abstraction is ours.
 > The only external tool is a C compiler — and that's deliberate.
@@ -7,12 +7,12 @@
 
 ```
 ┌─────────────────────────────────────────┐
-│  Layer 3: Machine AI                    │
+│  Layer 3: .M AI                         │
 │  Symbolic reasoning over code           │
 │  Pattern recognition, system design     │
 │  (future — built on VM primitives)      │
 ├─────────────────────────────────────────┤
-│  Layer 2: Machine VM                    │
+│  Layer 2: .M VM                         │
 │  Temporal values, uncertainty, history  │
 │  Persistence, reflection, drift         │
 │  Written in M → compiled to native      │
@@ -81,13 +81,13 @@ M reads C. The entire C bootstrap (6 files, 3500+ lines) has been parsed and
 translated to M syntax (3249 lines, 124 functions). Pointer operations remain
 as comments — they have no M equivalent and don't need one.
 
-## Layer 2: Machine VM (Next Milestone)
+## Layer 2: .M VM (Next Milestone)
 
-The VM is where Machine becomes more than a compiler.
+The VM is where .M becomes more than a compiler.
 
 ### Core Concept: Temporal Values
 
-In Machine VM, every value has a past. Assignment doesn't overwrite — it appends.
+In .M VM, every value has a past. Assignment doesn't overwrite — it appends.
 
 ```
 bind x 42           -- x timeline: [42]
@@ -104,11 +104,11 @@ These questions were identified as critical before any code is written.
 
 #### 1. Time Model: Discrete
 
-Time in Machine VM is **discrete**, measured in ticks (instruction count) and
+Time in .M VM is **discrete**, measured in ticks (instruction count) and
 wall-clock timestamps.
 
 **Rationale:** Continuous time requires floating-point accumulation and brings
-complexity that isn't needed. Machine analyzes code, not physics simulations.
+complexity that isn't needed. .M analyzes code, not physics simulations.
 Discrete ticks give deterministic replay. Wall-clock timestamps give human context.
 
 **Implementation:**
@@ -124,7 +124,7 @@ TimePoint = { tick: i32, wall_time: i32, source: string }
 Confidence is **not Bayesian**. It's a simple `[0, 100]` integer scale.
 
 **Rationale:** Bayesian inference requires probability distributions and prior
-beliefs — heavy machinery for a foundation layer. Machine's uncertainty is
+beliefs — heavy machinery for a foundation layer. .M's uncertainty is
 simpler: "how much do I trust this value?"
 
 **Propagation rules:**
@@ -141,7 +141,7 @@ maps directly to M types. No floating-point edge cases, no epsilon comparisons.
 
 Propagation is **deterministic**, not probabilistic.
 
-**Rationale:** Probabilistic graphs are powerful but opaque. Machine's philosophy
+**Rationale:** Probabilistic graphs are powerful but opaque. .M's philosophy
 is "what you write is what runs." If `x = a + b` and both have confidence 80,
 the result has confidence 80. Always. Deterministic propagation means the user
 can predict outcomes without a statistics degree.
@@ -152,7 +152,7 @@ confidence values), the AI layer interprets it however it wants.
 
 #### 4. IR Execution: VM Interprets Its Own Bytecode Format
 
-The Machine VM **defines and executes its own instruction set**.
+The .M VM **defines and executes its own instruction set**.
 
 **Rationale:** If the VM just ran M bytecode, it would be a glorified M runtime.
 The VM needs instructions that M doesn't have — `HISTORY`, `DRIFT`, `REFLECT`,
@@ -162,7 +162,7 @@ The VM needs instructions that M doesn't have — `HISTORY`, `DRIFT`, `REFLECT`,
 loads and executes bytecode containing temporal opcodes. M never sees these
 opcodes — they exist only at the VM layer.
 
-**Bytecode format (Machine VM):**
+**Bytecode format (.M VM):**
 ```
 Opcode (1 byte) + operands (variable)
 
@@ -197,12 +197,12 @@ Snapshots are append-only. You can't modify a snapshot. RESTORE doesn't delete
 the snapshot — you can restore multiple times. PERSIST writes the full timeline
 (not just current values) to disk.
 
-**Why not continuous undo:** Machine's temporal model already preserves history
+**Why not continuous undo:** .M's temporal model already preserves history
 via timelines. Every `BIND` appends, never overwrites. The full trajectory is
 always available. Rollback to a specific tick can be implemented by AI layer
 reading the timeline and extracting the value at tick N.
 
-### Opcode Set (Machine VM)
+### Opcode Set (.M VM)
 
 | Category | Opcodes |
 |----------|---------|
@@ -293,7 +293,7 @@ Per binding:
 
 All integers are 32-bit (M's native type). No floating point anywhere.
 
-## Layer 3: Machine AI (Future)
+## Layer 3: .M AI (Future)
 
 The AI layer uses VM primitives to reason about code.
 
@@ -370,15 +370,15 @@ version has 32 — no floating-point opcodes, `PUSH_APPROX` takes `i32` confiden
 - No JIT compiler. The VM interprets bytecode. Speed comes from M→C→native for
   the VM itself.
 - No garbage collector. M manages memory explicitly.
-- No networking. Machine is a local system first.
+- No networking. .M is a local system first.
 - No GUI. Text I/O only. Forever.
-- No plugin system. If you need to extend Machine, you modify Machine.
+- No plugin system. If you need to extend .M, you modify .M.
 
 ## File Organization
 
 ```
 examples/
-  machine_vm.m        -- Machine VM implementation (Phase A-C)
+  machine_vm.m        -- .M VM implementation (Phase A-C)
   machine_asm.m       -- Simple assembler for VM bytecode
   self_codegen.m      -- M compiler (existing, unchanged)
   c_lexer.m           -- C tokenizer (existing, unchanged)
@@ -393,10 +393,10 @@ everything else. It transpiles to C and runs as a native executable.
 ```
 M compiles M (self-hosting)
 M reads C (cross-language)
-M compiles Machine VM (M program → native executable)
-Machine VM runs temporal programs (its own bytecode)
-Machine VM hosts Machine AI (future)
-Machine AI analyzes M, C, and everything else (future)
+M compiles .M VM (M program → native executable)
+.M VM runs temporal programs (its own bytecode)
+.M VM hosts .M AI (future)
+.M AI analyzes M, C, and everything else (future)
 ```
 
 The seed grows into the tree that produces the next seed.
